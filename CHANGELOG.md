@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.9 — Frontend Template Hardening (2026-06-23)
+
+- Replaced embedded ~2500-line INDEX_HTML with _read_template_fallback() template reader
+- templates/index.html is now the single frontend source of truth
+- server.py reduced by ~2500 lines (from 4274 to ~1770)
+- Added Tools/validation/validate_dashboard_phase3.ps1 validation script
+- Updated DASHBOARD_PRODUCT_BOUNDARY.md to reflect resolved template debt
+- All existing UI features preserved: wrapper chips, Wrapper Registry, Effective Settings, gear drawer, model cards, Home/Business mode
+
 ## v1.8 — Effective Settings Intelligence (2026-06-23)
 
 - Effective Settings Intelligence Phase 2 implemented

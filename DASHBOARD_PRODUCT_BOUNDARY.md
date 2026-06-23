@@ -53,12 +53,15 @@ and roadmap artifacts.
 - **`D:\PORTTORETRO_ARCHIVE\PROJECTS\Bolt\Dashboard`** — Does not exist as of
   Phase 0. No historical dashboard files under Bolt.
 
-## Design Debt
+## Design Debt (Resolved)
 
-1. **Dual-template architecture:** `server.py` embeds an `INDEX_HTML` string constant
+1. ~~**Dual-template architecture:** `server.py` embeds an `INDEX_HTML` string constant
    that serves as a fallback when `templates/index.html` is unavailable. The canonical
    template is `templates/index.html`. Both must be kept synchronized. This is
-   acknowledged design debt to be resolved in a future phase (see ROADMAP.md).
+   acknowledged design debt to be resolved in a future phase (see ROADMAP.md).~~
+   **RESOLVED in Phase 3:** The embedded ~2500-line `INDEX_HTML` constant has been
+   replaced with `_read_template_fallback()`, which reads `templates/index.html` at
+   runtime. `templates/index.html` is now the single frontend source of truth.
 
 2. **Backup file proliferation:** The root directory contains many `.bak` and historical
    `server.py` variants. These are preserved for forensic reference but are not part

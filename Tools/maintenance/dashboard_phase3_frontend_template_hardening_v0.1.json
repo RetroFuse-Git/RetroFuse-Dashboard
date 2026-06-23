@@ -1,0 +1,34 @@
+{
+  "phase3_version": "v0.1",
+  "phase": "DASHBOARD_PHASE3_FRONTEND_TEMPLATE_HARDENING",
+  "generated_at": "2026-06-23T21:00:00Z",
+  "source_of_truth": "D:\\RETROFUSE_OPS\\Dashboard\\templates\\index.html",
+  "server_role": "API server + template reader at runtime",
+  "embedded_index_html_removed": true,
+  "embedded_index_html_replaced_with": "_read_template_fallback() — 95 lines",
+  "server_py_lines_before": 4274,
+  "server_py_lines_after": 1770,
+  "lines_reduced": 2504,
+  "validation_script_created": "Tools/validation/validate_dashboard_phase3.ps1",
+  "validation_script_checks": 25,
+  "ui_features_preserved": [
+    "Models tab",
+    "Home/Business mode toggle",
+    "Model cards with wrapper chips, hazard badges, settings chips",
+    "Wrapper Registry section",
+    "Effective Settings section",
+    "Gear drawer with Displayed Wrappers",
+    "30s auto-refresh"
+  ],
+  "forbidden_confirmed": [
+    "no_push",
+    "no_bolt",
+    "no_safepoint",
+    "no_daily_bundle",
+    "no_settings_mutation",
+    "no_launch",
+    "no_ollama_commands",
+    "no_modelfiles",
+    "no_wrapper_profiles"
+  ]
+}

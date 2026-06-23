@@ -39,9 +39,11 @@
 - [ ] Settings persistence
 - [ ] Rollback support
 
-## Phase 5 — Template Unification
-- [ ] Resolve dual-template architecture (embedded INDEX_HTML vs templates/index.html)
-- [ ] Single source of truth for HTML
+## Phase 5 — Template Unification (complete)
+- [x] Resolve dual-template architecture (embedded INDEX_HTML vs templates/index.html)
+- [x] Single source of truth: templates/index.html
+- [x] server.py reads template at runtime via _read_template_fallback()
+- [x] Minimal error page fallback if template file is missing
 
 ## Future
 - [ ] Wrapper selection persistence

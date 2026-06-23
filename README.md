@@ -55,9 +55,11 @@ D:\RETROFUSE_OPS\Dashboard\
 
 ## Architecture Notes
 
-- **Dual-template architecture:** `server.py` embeds an `INDEX_HTML` fallback string.
-  The canonical template is `templates/index.html`. Keeping them in sync is
-  acknowledged design debt (see `DASHBOARD_PRODUCT_BOUNDARY.md`).
+- **Frontend source of truth:** `templates/index.html` is the single canonical
+  frontend source. `server.py` reads it at runtime via `_read_template_fallback()`.
+  The previously embedded ~2500-line `INDEX_HTML` constant has been replaced with
+  a minimal template reader. If the template file is missing, a minimal error page
+  is returned. API endpoints remain available independently.
 - **Read-only display:** The dashboard is read-only. Settings edits require explicit
   apply actions with receipt tracking.
 - **No launch endpoint:** Wrapper/model launch is not wired in this phase.
