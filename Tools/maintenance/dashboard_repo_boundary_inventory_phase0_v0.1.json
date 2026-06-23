@@ -1,0 +1,81 @@
+{
+  "inventory_version": "v0.1",
+  "phase": "DASHBOARD_REPO_BOUNDARY_CLEANUP_PHASE0",
+  "generated_at": "2026-06-23T19:55:00Z",
+  "canonical_root": "D:\\RETROFUSE_OPS\\Dashboard",
+  "inventories": {
+    "canonical_dashboard": {
+      "path": "D:\\RETROFUSE_OPS\\Dashboard",
+      "classification": "DASHBOARD_OWNED",
+      "items": {
+        "app/model_dashboard.py": "DASHBOARD_OWNED — Core model dashboard logic",
+        "app/app_main.py": "DASHBOARD_OWNED — Application entry point",
+        "server.py": "DASHBOARD_OWNED — FastAPI server with embedded INDEX_HTML",
+        "templates/index.html": "DASHBOARD_OWNED — Canonical HTML template",
+        "static/index.html": "DASHBOARD_OWNED — Static fallback HTML",
+        "requirements.txt": "DASHBOARD_OWNED — Python dependencies",
+        "BLUEPRINT.md": "DASHBOARD_OWNED — Project blueprint",
+        "RETROFUSE_FOLDER_BLUEPRINT.json": "DASHBOARD_OWNED — Folder blueprint",
+        "RUN_CONTRACT.json": "DASHBOARD_OWNED — Run contract",
+        "WORKER_BRIEF.md": "DASHBOARD_OWNED — Worker brief",
+        "SMC_Governed_Start_Patch_Report_20260510.json": "DASHBOARD_OWNED — SMC patch report",
+        "Start_RetroFuse_OPS_Dashboard.ps1": "DASHBOARD_OWNED — Startup script",
+        "Start_RetroFuse_OpsDashboard.ps1": "DASHBOARD_OWNED — Startup script (alt name)",
+        "Start_RetroFuse_OpsDashboard_Headless.ps1": "DASHBOARD_OWNED — Headless startup",
+        "Run_RetroFuse_OPS_Dashboard_Watchdog.ps1": "DASHBOARD_OWNED — Watchdog script",
+        "Watch_RetroFuse_OpsDashboard.ps1": "DASHBOARD_OWNED — Watch script",
+        "Tools/maintenance/": "DASHBOARD_OWNED — All maintenance receipts and phase docs",
+        "_Archive/": "DASHBOARD_OWNED — Historical index snapshots (preserved)",
+        "_Forensic/": "DASHBOARD_OWNED — Forensic backups (preserved)",
+        "_Work/": "DASHBOARD_OWNED — Runtime work logs (gitignored)",
+        "logs/": "DASHBOARD_OWNED — Log directory (gitignored, empty)",
+        ".venv/": "DASHBOARD_OWNED — Virtual environment (gitignored)",
+        "*.bak / *.BAK / *oldworking* / *baseline* / *BROKEN*": "DASHBOARD_OWNED — Historical backup files (gitignored, preserved in place)",
+        "api_*.json / api_*.txt": "DASHBOARD_OWNED — API debug dumps (gitignored)",
+        "debug_*.txt": "DASHBOARD_OWNED — Debug output (gitignored)",
+        "_last_error.txt": "DASHBOARD_OWNED — Error capture (gitignored)"
+      }
+    },
+    "bolt_dashboard": {
+      "path": "D:\\PORTTORETRO_ARCHIVE\\PROJECTS\\Bolt\\Dashboard",
+      "classification": "HISTORICAL_REFERENCE",
+      "exists": false,
+      "note": "No Dashboard directory exists under Bolt. No historical dashboard files to inventory."
+    },
+    "projects_dashboard": {
+      "path": "D:\\PORTTORETRO_ARCHIVE\\PROJECTS\\Dashboard",
+      "classification": "HISTORICAL_REFERENCE — UNRELATED PROJECT",
+      "exists": true,
+      "note": "This is a Unity game project (UnityProject/, Branding/, CR/), not the OPS Dashboard. It is a noncanonical reference only.",
+      "items": {
+        "Artifacts/RC/": "UNRELATED — Unity RC artifacts",
+        "Artifacts/SAFEPOINTS/": "UNRELATED — Unity SAFEPOINT artifacts",
+        "Branding/": "UNRELATED — Unity project branding",
+        "CR/": "UNRELATED — Unity change requests",
+        "Docs/": "UNRELATED — Unity project docs",
+        "Metadata/": "UNRELATED — Unity project metadata",
+        "Tools/maintenance/": "UNRELATED — Unity project maintenance",
+        "UnityProject/": "UNRELATED — Unity game project",
+        "_BOOT/": "UNRELATED — Unity boot config",
+        "_CAPSULES/": "UNRELATED — Unity capsules",
+        "_DailyBundles/": "UNRELATED — Unity daily bundles"
+      }
+    }
+  },
+  "exclusions_confirmed": {
+    "daily_bundle_builder_kit": "NOT_MIGRATED — Daily Bundle builder kit remains outside Dashboard",
+    "safepoint_engine": "NOT_MIGRATED — SAFEPOINT engine files remain outside Dashboard",
+    "bolt_rc2_browser_controller": "NOT_MIGRATED — Bolt RC2 files remain outside Dashboard",
+    "wrapper_cli_infrastructure": "NOT_MIGRATED — Wrapper/CLI infrastructure remains outside Dashboard"
+  },
+  "files_created": [
+    "README.md",
+    "CHANGELOG.md",
+    "ROADMAP.md",
+    "DASHBOARD_PRODUCT_BOUNDARY.md",
+    ".gitignore",
+    "docs/ (directory)",
+    "Tools/validation/ (directory)"
+  ],
+  "notes": "No dashboard-owned artifacts were found outside the canonical root. The PROJECTS/Dashboard directory is a Unity game project, not the OPS Dashboard. No Bolt/Dashboard directory exists."
+}

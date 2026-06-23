@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Dashboard runtime
+_Work/
+logs/
+_last_error.txt
+OpsDashboard_Watchdog.log
+
+# API debug dumps
+api_*.json
+api_*.txt
+debug_*.txt
+debug_*.json
+
+# Backup files — historical server.py variants and .bak files
+*.bak
+*.bak_*
+*.BAK
+*.BAK_*
+*oldworking*
+*_baseline.py
+*BROKEN*
+
+# Compiled
+*.exe
+*.dll
