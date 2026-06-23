@@ -379,6 +379,281 @@ def build_wrapper_registry() -> Dict[str, Any]:
         },
     }
 
+
+# ============================================================
+# Effective Settings Intelligence — Phase 2
+# ============================================================
+
+SETTINGS_GROUPS = [
+    {
+        "group": "core",
+        "label": "Core Parameters",
+        "home_visible": True,
+        "settings": [
+            {"setting_id": "num_ctx", "label": "Context Window", "default": 2048, "unit": "tokens", "risk_threshold": 2048, "ollama_param": "num_ctx"},
+            {"setting_id": "temperature", "label": "Temperature", "default": 0.7, "unit": "", "risk_threshold": 0.7, "ollama_param": "temperature"},
+            {"setting_id": "num_predict", "label": "Max Output Tokens", "default": -1, "unit": "tokens", "risk_threshold": -1, "ollama_param": "num_predict"},
+            {"setting_id": "timeout_seconds", "label": "Timeout", "default": 300, "unit": "s", "risk_threshold": 300, "ollama_param": None},
+        ],
+    },
+    {
+        "group": "sampling",
+        "label": "Sampling Parameters",
+        "home_visible": False,
+        "settings": [
+            {"setting_id": "top_p", "label": "Top P", "default": 0.9, "unit": "", "risk_threshold": None, "ollama_param": "top_p"},
+            {"setting_id": "top_k", "label": "Top K", "default": 40, "unit": "", "risk_threshold": None, "ollama_param": "top_k"},
+            {"setting_id": "min_p", "label": "Min P", "default": 0.0, "unit": "", "risk_threshold": None, "ollama_param": "min_p"},
+            {"setting_id": "repeat_penalty", "label": "Repeat Penalty", "default": 1.1, "unit": "", "risk_threshold": None, "ollama_param": "repeat_penalty"},
+            {"setting_id": "seed", "label": "Seed", "default": 0, "unit": "", "risk_threshold": None, "ollama_param": "seed"},
+        ],
+    },
+    {
+        "group": "prompt_session",
+        "label": "Prompt & Session",
+        "home_visible": False,
+        "settings": [
+            {"setting_id": "system_prompt", "label": "System Prompt", "default": "", "unit": "", "risk_threshold": None, "ollama_param": "system"},
+            {"setting_id": "stop_tokens", "label": "Stop Tokens", "default": [], "unit": "", "risk_threshold": None, "ollama_param": "stop"},
+            {"setting_id": "session_context_state", "label": "Session Context", "default": "ephemeral", "unit": "", "risk_threshold": None, "ollama_param": None},
+        ],
+    },
+    {
+        "group": "ollama_server",
+        "label": "Ollama Server",
+        "home_visible": False,
+        "settings": [
+            {"setting_id": "ollama_host", "label": "Ollama Host", "default": "http://127.0.0.1:11434", "unit": "", "risk_threshold": None, "ollama_param": None},
+            {"setting_id": "ollama_models_path", "label": "Models Path", "default": "~/.ollama/models", "unit": "", "risk_threshold": None, "ollama_param": None},
+            {"setting_id": "serve_mode", "label": "Serve Mode", "default": "single-user", "unit": "", "risk_threshold": None, "ollama_param": None},
+        ],
+    },
+    {
+        "group": "persistence",
+        "label": "Persistence & Profiles",
+        "home_visible": False,
+        "settings": [
+            {"setting_id": "runtime_only", "label": "Runtime Only", "default": True, "unit": "", "risk_threshold": None, "ollama_param": None},
+            {"setting_id": "modelfile_profile", "label": "Modelfile Profile", "default": "none", "unit": "", "risk_threshold": None, "ollama_param": None},
+            {"setting_id": "wrapper_profile", "label": "Wrapper Profile", "default": "none", "unit": "", "risk_threshold": None, "ollama_param": None},
+            {"setting_id": "known_good_profile", "label": "Known Good Profile", "default": "none", "unit": "", "risk_threshold": None, "ollama_param": None},
+        ],
+    },
+]
+
+OLLAMA_PARAMETER_INTELLIGENCE = {
+    "runtime_examples": [
+        {"command": "ollama run <model> --temperature <value> --num-ctx <value>", "description": "Set temperature and context at runtime"},
+        {"command": "/set parameter seed <value>", "description": "Set random seed for reproducibility"},
+        {"command": "/set parameter num_predict <value>", "description": "Limit max output tokens"},
+        {"command": "/set parameter top_k <value>", "description": "Top-K sampling"},
+        {"command": "/set parameter top_p <value>", "description": "Nucleus sampling threshold"},
+        {"command": "/set parameter min_p <value>", "description": "Minimum probability threshold"},
+        {"command": "/set parameter num_ctx <value>", "description": "Context window size"},
+        {"command": "/set parameter temperature <value>", "description": "Model temperature"},
+        {"command": "/set parameter stop <tokens>", "description": "Stop tokens"},
+        {"command": "/show parameters", "description": "Show current effective parameters"},
+    ],
+    "persistent_examples": [
+        {"command": "Modelfile FROM <base>", "description": "Base model for Modelfile"},
+        {"command": "PARAMETER temperature <value>", "description": "Persistent temperature override"},
+        {"command": "PARAMETER top_p <value>", "description": "Persistent top-p override"},
+        {"command": "PARAMETER num_ctx <value>", "description": "Persistent context window"},
+        {"command": "SYSTEM <prompt>", "description": "Persistent system prompt"},
+    ],
+    "server_examples": [
+        {"command": "OLLAMA_HOST", "description": "Environment variable for Ollama server host"},
+        {"command": "OLLAMA_MODELS", "description": "Environment variable for models path"},
+        {"command": "ollama serve", "description": "Start Ollama server"},
+    ],
+    "rule": "Display as capability/setting knowledge only. Do not execute ollama commands and do not create Modelfiles in this phase.",
+}
+
+HAZARD_PROFILES = {
+    "gemini*flash*ollama*": {
+        "model_pattern": "gemini*flash*ollama*",
+        "home_mode_recommended": False,
+        "business_mode_allowed": True,
+        "requires_guard_profile": True,
+        "cost_sensitive": True,
+        "settings_sensitive": True,
+        "default_behavior_risk": True,
+        "known_good_profile": "guarded_gemini_flash",
+        "default_risk_reason": "Cost-sensitive cloud model. Default settings may incur unexpected charges. Use only with known-good guarded profile.",
+        "recommended_action": "Configure guarded profile before use. Not recommended for casual Home Mode.",
+        "profile_status": "NOT_CONFIGURED",
+    },
+}
+
+DEFAULT_HAZARD_PROFILE = {
+    "model_pattern": "*",
+    "home_mode_recommended": True,
+    "business_mode_allowed": True,
+    "requires_guard_profile": False,
+    "cost_sensitive": False,
+    "settings_sensitive": False,
+    "default_behavior_risk": False,
+    "known_good_profile": None,
+    "default_risk_reason": None,
+    "recommended_action": None,
+    "profile_status": "UNKNOWN",
+}
+
+
+def _resolve_hazard_profile(alias_name: str, model_name: str) -> Dict[str, Any]:
+    """Resolve hazard profile for a model by pattern matching."""
+    import fnmatch
+    for pattern, profile in HAZARD_PROFILES.items():
+        if fnmatch.fnmatch(alias_name, pattern) or fnmatch.fnmatch(model_name, pattern):
+            return dict(profile)
+    return dict(DEFAULT_HAZARD_PROFILE)
+
+
+def _build_effective_settings_for_model(
+    alias_name: str,
+    alias_config: Dict[str, Any],
+    explicit: Dict[str, Any],
+    defaults: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Build effective settings with source stack for a single model."""
+    result = []
+    for group in SETTINGS_GROUPS:
+        for sdef in group["settings"]:
+            sid = sdef["setting_id"]
+            default_val = sdef["default"]
+            effective = default_val
+            source = "factory_default"
+            source_stack = []
+
+            # Check explicit overrides
+            if sid in explicit:
+                effective = explicit[sid]
+                source = "explicit"
+                source_stack.append("explicit")
+
+            # Check alias config
+            if sid in alias_config and alias_config[sid] is not None:
+                effective = alias_config[sid]
+                source = "config"
+                source_stack.append("config")
+
+            # Check Ollama defaults
+            if sid in defaults:
+                if source == "factory_default":
+                    effective = defaults[sid]
+                    source = "ollama_default"
+                    source_stack.append("ollama_default")
+
+            # If still factory default, use the default value
+            if not source_stack:
+                source_stack.append("factory_default")
+
+            # Determine risk
+            risk_level = "safe"
+            risk_reason = None
+            threshold = sdef.get("risk_threshold")
+            if threshold is not None and effective == threshold:
+                risk_level = "defaulted"
+                risk_reason = f"At factory default ({threshold})"
+            if threshold is not None and sid == "num_ctx" and effective == 2048:
+                risk_level = "risky"
+                risk_reason = "Default 2048 context may be too small for governed lanes"
+            if sid == "num_predict" and effective == -1:
+                risk_level = "risky"
+                risk_reason = "Unlimited output tokens (-1) may cause unbounded generation"
+            if sid == "timeout_seconds" and effective == 300:
+                risk_level = "risky"
+                risk_reason = "Default 300s timeout may cause hung requests"
+
+            result.append({
+                "setting_id": sid,
+                "label": sdef["label"],
+                "group": group["group"],
+                "group_label": group["label"],
+                "home_visible": group["home_visible"],
+                "effective_value": effective,
+                "source": source,
+                "source_stack": source_stack,
+                "default_value": default_val,
+                "configured_value": alias_config.get(sid, None),
+                "runtime_override": None,
+                "wrapper_override": None,
+                "modelfile_value": None,
+                "risk_level": risk_level,
+                "risk_reason": risk_reason,
+                "home_visibility": "visible" if group["home_visible"] else "hidden",
+                "business_visibility": "visible",
+                "editable_future": True,
+                "notes": None,
+                "ollama_param": sdef.get("ollama_param"),
+            })
+    return result
+
+
+def build_settings_intelligence() -> Dict[str, Any]:
+    """Build the settings intelligence response with per-model effective settings and hazard profiles."""
+    aliases_data = _load_model_aliases()
+    continuation = _load_continuation_packet()
+    aliases = aliases_data.get("aliases", {})
+    continuation_rows = continuation.get("dashboard_rows", [])
+
+    per_model = []
+    summary_risks = {"defaulted": 0, "risky": 0, "safe": 0, "unknown": 0}
+    summary_hazards = {"cost_sensitive": 0, "settings_sensitive": 0, "needs_profile": 0}
+
+    for alias_name, alias_config in aliases.items():
+        if not isinstance(alias_config, dict):
+            continue
+
+        model_name = alias_config.get("model", alias_name)
+        explicit = KNOWN_EXPLICIT_SETTINGS.get(alias_name, {})
+        defaults = OLLAMA_DEFAULTS.copy()
+
+        effective_settings = _build_effective_settings_for_model(alias_name, alias_config, explicit, defaults)
+        hazard = _resolve_hazard_profile(alias_name, model_name)
+
+        # Count risks
+        for s in effective_settings:
+            rl = s["risk_level"]
+            summary_risks[rl] = summary_risks.get(rl, 0) + 1
+
+        if hazard.get("cost_sensitive"):
+            summary_hazards["cost_sensitive"] += 1
+        if hazard.get("settings_sensitive"):
+            summary_hazards["settings_sensitive"] += 1
+        if hazard.get("requires_guard_profile"):
+            summary_hazards["needs_profile"] += 1
+
+        per_model.append({
+            "alias": alias_name,
+            "model": model_name,
+            "route_tier": alias_config.get("route_tier", ""),
+            "usage_tier": alias_config.get("usage_tier", 0),
+            "status": alias_config.get("status", "active"),
+            "effective_settings": effective_settings,
+            "hazard_profile": hazard,
+        })
+
+    def _sort_key(m):
+        tier_order = {"local": 0, "cloud": 1}
+        return (tier_order.get(m["route_tier"], 99), m.get("usage_tier", 99), m["alias"])
+
+    per_model.sort(key=_sort_key)
+
+    return {
+        "intelligence_version": "v0.1",
+        "generated_at": _iso_now_local(),
+        "settings_groups": SETTINGS_GROUPS,
+        "ollama_parameter_intelligence": OLLAMA_PARAMETER_INTELLIGENCE,
+        "hazard_profiles": HAZARD_PROFILES,
+        "per_model": per_model,
+        "summary": {
+            "total_models": len(per_model),
+            "risk_counts": summary_risks,
+            "hazard_counts": summary_hazards,
+        },
+    }
+
 def _read_json(path: Path) -> Optional[Any]:
     try:
         if not path.exists():
@@ -528,6 +803,10 @@ def _build_model_settings_row(
             "supports_cloud": wdef.get("supports_cloud", False),
         })
 
+    # Effective settings intelligence for this model
+    effective_settings = _build_effective_settings_for_model(alias_name, alias_config, explicit, defaults)
+    hazard_profile = _resolve_hazard_profile(alias_name, alias_config.get("model", alias_name))
+
     return {
         "alias": alias_name,
         "model": alias_config.get("model", alias_name),
@@ -550,6 +829,8 @@ def _build_model_settings_row(
         "settings": settings_fields,
         "adapter_statuses": adapter_statuses,
         "wrappers": model_wrappers,
+        "effective_settings": effective_settings,
+        "hazard_profile": hazard_profile,
         "last_validated": _iso_now_local(),
     }
 

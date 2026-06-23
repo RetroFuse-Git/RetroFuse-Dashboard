@@ -61,6 +61,13 @@ D:\RETROFUSE_OPS\Dashboard\
 - **Read-only display:** The dashboard is read-only. Settings edits require explicit
   apply actions with receipt tracking.
 - **No launch endpoint:** Wrapper/model launch is not wired in this phase.
+- **Effective Settings Intelligence:** Phase 2 adds per-model effective settings with
+  source stack (factory default, Modelfile, runtime override, wrapper profile),
+  hazard profiles (cost-sensitive, settings-sensitive, needs profile), and Ollama
+  parameter intelligence documentation. All read-only — no mutation.
+- **Settings groups:** Core (home-visible), Sampling, Prompt/Session, Ollama Server,
+  Persistence & Profiles. Home Mode shows simplified core values; Business Mode
+  shows full source provenance.
 
 ## Dependencies
 

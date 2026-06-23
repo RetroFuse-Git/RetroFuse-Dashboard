@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.8 — Effective Settings Intelligence (2026-06-23)
+
+- Effective Settings Intelligence Phase 2 implemented
+- Per-model effective settings with source stack (factory default, Modelfile, runtime, wrapper)
+- 5 settings groups: core, sampling, prompt/session, server, persistence
+- Hazard profiles: cost-sensitive, settings-sensitive, needs profile badges
+- Ollama parameter intelligence documentation (runtime, persistent, server examples)
+- GET /api/models/settings-intelligence endpoint
+- Effective Settings section in Models tab with risk summary bar
+- Home Mode shows simplified core values; Business Mode shows full provenance
+- Hazard/profile badges on model cards
+- Effective settings chips (ctx, temp, output, timeout) on model cards
+- No mutation endpoint added
+
 ## v1.7 — Lineage Gate (2026-06-23)
 
 - Wrapper Registry Phase 1 applied (13 wrappers, active/catalog separation, model card chips)

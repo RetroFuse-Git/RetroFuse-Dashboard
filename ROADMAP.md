@@ -14,7 +14,17 @@
 - [x] Wrapper Registry section in Models tab
 - [x] Gear drawer catalog display
 
-## Phase 2 — Wrapper/Model Compatibility
+## Phase 2 — Effective Settings Intelligence (complete)
+- [x] Per-model effective settings with source stack
+- [x] Settings groups: core, sampling, prompt/session, server, persistence
+- [x] Hazard profiles (cost-sensitive, settings-sensitive, needs profile)
+- [x] Ollama parameter intelligence documentation
+- [x] GET /api/models/settings-intelligence endpoint
+- [x] Effective Settings section in Models tab
+- [x] Home Mode simplified core values; Business Mode full provenance
+- [x] No mutation endpoint added
+
+## Phase 3 — Wrapper/Model Compatibility
 - [ ] Model-wrapper compatibility matrix
 - [ ] Evidence-backed compatibility assertions
 - [ ] Per-model wrapper chip filtering

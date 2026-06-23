@@ -1,0 +1,40 @@
+{
+  "intelligence_version": "v0.1",
+  "phase": "DASHBOARD_EFFECTIVE_SETTINGS_INTELLIGENCE_PHASE2",
+  "generated_at": "2026-06-23T20:30:00Z",
+  "settings_groups": [
+    {"group": "core", "label": "Core Parameters", "home_visible": true, "settings_count": 4},
+    {"group": "sampling", "label": "Sampling Parameters", "home_visible": false, "settings_count": 5},
+    {"group": "prompt_session", "label": "Prompt & Session", "home_visible": false, "settings_count": 3},
+    {"group": "ollama_server", "label": "Ollama Server", "home_visible": false, "settings_count": 3},
+    {"group": "persistence", "label": "Persistence & Profiles", "home_visible": false, "settings_count": 4}
+  ],
+  "ollama_parameter_intelligence": {
+    "runtime_examples_count": 10,
+    "persistent_examples_count": 5,
+    "server_examples_count": 3
+  },
+  "hazard_profiles_defined": {
+    "gemini*flash*ollama*": {
+      "home_mode_recommended": false,
+      "business_mode_allowed": true,
+      "requires_guard_profile": true,
+      "cost_sensitive": true,
+      "settings_sensitive": true
+    },
+    "default": {
+      "home_mode_recommended": true,
+      "business_mode_allowed": true,
+      "requires_guard_profile": false,
+      "cost_sensitive": false,
+      "settings_sensitive": false
+    }
+  },
+  "endpoint": "GET /api/models/settings-intelligence",
+  "endpoint_status": "LIVE",
+  "per_model_count": 28,
+  "effective_settings_per_model": 19,
+  "summary_risk_counts": {"defaulted": 22, "risky": 71, "safe": 439, "unknown": 0},
+  "summary_hazard_counts": {"cost_sensitive": 0, "settings_sensitive": 0, "needs_profile": 0},
+  "notes": "Hazard profile for gemini*flash*ollama* did not match any current aliases. Default profile applied to all 28 models. Hazard profiles are pattern-matched and will activate when matching models are added."
+}

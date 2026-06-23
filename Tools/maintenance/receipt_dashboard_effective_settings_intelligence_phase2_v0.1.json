@@ -1,0 +1,51 @@
+{
+  "receipt_type": "dashboard_effective_settings_intelligence_phase2",
+  "phase": "DASHBOARD_EFFECTIVE_SETTINGS_INTELLIGENCE_PHASE2",
+  "intelligence_version": "v0.1",
+  "timestamp_utc": "2026-06-23T20:35:00Z",
+  "operator": "claude_code_bounded_write_lane",
+  "preflight_push_result": "REMOTE_NOT_CONFIGURED_OR_AMBIGUOUS — no remote configured for Dashboard repo; prior commits not pushed",
+  "files_changed": [
+    "app/model_dashboard.py — Added settings intelligence data layer, hazard profiles, Ollama parameter docs",
+    "server.py — Added endpoint, embedded INDEX_HTML UI updates",
+    "templates/index.html — Added Effective Settings section, hazard badges, settings chips, JS rendering",
+    "README.md — Updated architecture notes",
+    "ROADMAP.md — Marked Phase 2 complete",
+    "CHANGELOG.md — Added v1.8 entry"
+  ],
+  "output_files_created": [
+    "Tools/maintenance/DASHBOARD_EFFECTIVE_SETTINGS_INTELLIGENCE_PHASE2_v0.1.md",
+    "Tools/maintenance/dashboard_effective_settings_intelligence_phase2_v0.1.json",
+    "Tools/maintenance/receipt_dashboard_effective_settings_intelligence_phase2_v0.1.json"
+  ],
+  "validation_results": {
+    "python_compile_server_py": "PASS",
+    "python_compile_model_dashboard_py": "PASS",
+    "get_api_models_settings_intelligence": "PASS (200, 28 models, 19 settings each, 5 groups)",
+    "get_api_models_wrappers": "PASS (200, 13 wrappers preserved)",
+    "get_api_models_dashboard_home": "PASS (200)",
+    "get_api_models_dashboard_business": "PASS (200)",
+    "get_api_models_edit_receipts": "PASS (200)",
+    "get_api_models_assets": "PASS (200)",
+    "get_api_models_routing_eligibility": "PASS (200)",
+    "no_launch_endpoint": "CONFIRMED",
+    "no_settings_mutation_endpoint": "CONFIRMED",
+    "no_safepoint_continuity_changes": "CONFIRMED"
+  },
+  "forbidden_items_confirmed_not_violated": [
+    "no_settings_mutation",
+    "no_launch_endpoint",
+    "no_ollama_commands_executed",
+    "no_modelfiles_created",
+    "no_wrapper_profiles_changed",
+    "no_safepoint_continuity_changes",
+    "no_daily_bundle_migration",
+    "no_bolt_files_touched",
+    "no_phase2_push"
+  ],
+  "commit": {
+    "status": "PENDING",
+    "push": false
+  },
+  "success_state": "DASHBOARD_EFFECTIVE_SETTINGS_INTELLIGENCE_PHASE2_COMMITTED_NO_PUSH"
+}

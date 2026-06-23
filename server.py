@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
-from app.model_dashboard import build_model_dashboard, build_edit_receipt, save_edit_receipt, list_edit_receipts, build_asset_inventory, build_routing_eligibility, build_mode_aware_dashboard, build_wrapper_registry
+from app.model_dashboard import build_model_dashboard, build_edit_receipt, save_edit_receipt, list_edit_receipts, build_asset_inventory, build_routing_eligibility, build_mode_aware_dashboard, build_wrapper_registry, build_settings_intelligence
 
 APP_VERSION = "v1.7_lineage_gate"
 SAFEPOINT_PROOF_MAX_AGE_SECONDS = 24 * 60 * 60
@@ -2327,6 +2327,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
           </div>
         </div>
       </section>
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Effective Settings</div>
+            <div class="card-tag">INTELLIGENCE &middot; SOURCE STACK</div>
+          </div>
+          <div class="card-body" id="models-settings-intelligence-card">
+            <div class="small">Loading settings intelligence...</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Settings are read-only. Source stack: factory default &rarr; Modelfile &rarr; runtime override &rarr; wrapper profile. No mutation in this phase.</span>
+          </div>
+        </div>
+      </section>
     </main>
 
   </div>
@@ -3316,6 +3330,31 @@ INDEX_HTML = r"""<!DOCTYPE html>
         });
         html += '</div>';
       }
+      // Hazard/profile badges
+      if (row.hazard_profile) {
+        var hp = row.hazard_profile;
+        var hazardChips = [];
+        if (hp.cost_sensitive) hazardChips.push('<span class="risk-pill route" style="font-size:0.55rem;">COST</span>');
+        if (hp.settings_sensitive) hazardChips.push('<span class="risk-pill timeout" style="font-size:0.55rem;">SETTINGS</span>');
+        if (hp.requires_guard_profile) hazardChips.push('<span class="risk-pill profile" style="font-size:0.55rem;">NEEDS PROFILE</span>');
+        if (hp.default_behavior_risk) hazardChips.push('<span class="risk-pill ctx" style="font-size:0.55rem;">DEFAULT RISK</span>');
+        if (hazardChips.length) {
+          html += '<div style="display:flex; gap:3px; flex-wrap:wrap; margin-top:2px;">' + hazardChips.join("") + '</div>';
+        }
+      }
+      // Effective settings chips — core values only
+      if (row.effective_settings && row.effective_settings.length) {
+        var coreSettings = row.effective_settings.filter(function(s) { return s.group === "core"; });
+        if (coreSettings.length) {
+          html += '<div style="display:flex; gap:3px; flex-wrap:wrap; margin-top:2px; font-size:0.6rem; color:var(--text-muted);">';
+          coreSettings.forEach(function(s) {
+            var valCls = s.risk_level === "risky" ? "value-bad" : (s.risk_level === "defaulted" ? "value-warn" : "value-ok");
+            html += '<span title="' + escapeHtml(s.label) + ': ' + escapeHtml(String(s.effective_value)) + ' (' + escapeHtml(s.source) + ')">' +
+              escapeHtml(s.setting_id) + ': <span class="' + valCls + '">' + escapeHtml(String(s.effective_value)) + '</span></span>';
+          });
+          html += '</div>';
+        }
+      }
       html += '<details style="margin-top:4px;"><summary style="font-size:0.65rem; color:var(--text-muted);"><span>Settings & evidence</span></summary><div class="details-body" style="font-size:0.68rem;">';
       html += '<div>Model: ' + escapeHtml(row.model || "") + '</div>';
       html += '<div>Provider: ' + escapeHtml(row.provider_base_url || "n/a") + '</div>';
@@ -3896,6 +3935,92 @@ INDEX_HTML = r"""<!DOCTYPE html>
   loadWrapperRegistry();
   setInterval(loadWrapperRegistry, 30000);
 
+  // ---- Effective Settings Intelligence ----
+
+  function renderSettingsIntelligence(data) {
+    const card = document.getElementById("models-settings-intelligence-card");
+    if (!card) return;
+    const perModel = Array.isArray(data.per_model) ? data.per_model : [];
+    const summary = data.summary || {};
+    const riskCounts = summary.risk_counts || {};
+    const hazardCounts = summary.hazard_counts || {};
+
+    if (!perModel.length) {
+      card.innerHTML = '<div class="small">No settings intelligence data loaded.</div>';
+      return;
+    }
+
+    var html = '<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; font-size:0.7rem;">';
+    html += '<span class="pill"><span class="pill-dot ok"></span> Safe: ' + (riskCounts.safe || 0) + '</span>';
+    html += '<span class="pill"><span class="pill-dot warn"></span> Defaulted: ' + (riskCounts.defaulted || 0) + '</span>';
+    html += '<span class="pill"><span class="pill-dot bad"></span> Risky: ' + (riskCounts.risky || 0) + '</span>';
+    html += '<span class="pill"><span class="pill-dot warn"></span> Cost-sensitive: ' + (hazardCounts.cost_sensitive || 0) + '</span>';
+    html += '<span class="pill"><span class="pill-dot bad"></span> Needs profile: ' + (hazardCounts.needs_profile || 0) + '</span>';
+    html += '</div>';
+
+    perModel.forEach(function(m) {
+      var settings = Array.isArray(m.effective_settings) ? m.effective_settings : [];
+      var hp = m.hazard_profile || {};
+      var coreSettings = settings.filter(function(s) { return s.group === "core"; });
+      var samplingSettings = settings.filter(function(s) { return s.group === "sampling"; });
+
+      html += '<div class="list-item" style="margin-bottom:6px;">';
+      html += '<div class="card-row"><div class="value mono" style="font-size:.8rem;">' + escapeHtml(m.alias) + '</div>';
+      html += '<span class="small">' + escapeHtml(m.route_tier || "") + '</span></div>';
+
+      var hazardBadges = [];
+      if (hp.cost_sensitive) hazardBadges.push('<span class="wr-chip not-configured">COST-SENSITIVE</span>');
+      if (hp.settings_sensitive) hazardBadges.push('<span class="wr-chip unknown">SETTINGS-SENSITIVE</span>');
+      if (hp.requires_guard_profile) hazardBadges.push('<span class="wr-chip placeholder">NEEDS PROFILE</span>');
+      if (hazardBadges.length) {
+        html += '<div style="display:flex; gap:3px; flex-wrap:wrap; margin:2px 0;">' + hazardBadges.join("") + '</div>';
+      }
+
+      if (coreSettings.length) {
+        html += '<div style="display:flex; gap:4px; flex-wrap:wrap; margin-top:2px;">';
+        coreSettings.forEach(function(s) {
+          var valCls = s.risk_level === "risky" ? "value-bad" : (s.risk_level === "defaulted" ? "value-warn" : "value-ok");
+          var srcLabel = s.source === "explicit" ? "EXPLICIT" : (s.source === "config" ? "CONFIG" : (s.source === "ollama_default" ? "DEFAULT" : "FACTORY"));
+          html += '<span class="pill" style="font-size:0.6rem;" title="' + escapeHtml(s.label) + ': ' + escapeHtml(String(s.effective_value)) + ' | Source: ' + escapeHtml(s.source) + '">' +
+            escapeHtml(s.setting_id) + ': <span class="' + valCls + '">' + escapeHtml(String(s.effective_value)) + '</span>' +
+            ' <span class="small" style="opacity:.6;">' + srcLabel + '</span></span>';
+        });
+        html += '</div>';
+      }
+
+      if (samplingSettings.length) {
+        html += '<details style="margin-top:2px;"><summary style="font-size:0.6rem; color:var(--text-muted);"><span>Sampling & source stack</span></summary>';
+        html += '<div class="details-body" style="font-size:0.65rem;">';
+        samplingSettings.forEach(function(s) {
+          var valCls = s.risk_level === "risky" ? "value-bad" : (s.risk_level === "defaulted" ? "value-warn" : "value-ok");
+          html += '<div class="card-row"><span class="label">' + escapeHtml(s.label) + '</span>' +
+            '<span class="value ' + valCls + ' mono">' + escapeHtml(String(s.effective_value)) + '</span>' +
+            '<span class="small" style="opacity:.6;">' + escapeHtml(s.source) + '</span></div>';
+        });
+        html += '</div></details>';
+      }
+
+      html += '</div>';
+    });
+
+    card.innerHTML = html;
+  }
+
+  async function loadSettingsIntelligence() {
+    try {
+      const r = await fetch("/api/models/settings-intelligence?nocache=" + Date.now());
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      renderSettingsIntelligence(data);
+    } catch (err) {
+      const el = document.getElementById("models-settings-intelligence-card");
+      if (el) el.innerHTML = '<div class="small" style="color:#f97373;">Failed to load settings intelligence: ' + escapeHtml(err.message || "unknown") + "</div>";
+    }
+  }
+
+  loadSettingsIntelligence();
+  setInterval(loadSettingsIntelligence, 30000);
+
   // ---- Dashboard Settings Drawer ----
   const WRAPPER_DEFS = [
     { id: "ollama_direct", label: "Ollama Direct", short: "Ol", iconClass: "preferred", checked: true, chip: "CONFIGURED", chipClass: "configured", meta: "http://127.0.0.1:11434" },
@@ -4135,6 +4260,11 @@ def api_models_assets() -> JSONResponse:
 @app.get("/api/models/wrappers")
 def api_models_wrappers() -> JSONResponse:
     return JSONResponse(build_wrapper_registry())
+
+
+@app.get("/api/models/settings-intelligence")
+def api_models_settings_intelligence() -> JSONResponse:
+    return JSONResponse(build_settings_intelligence())
 
 
 
