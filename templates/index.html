@@ -339,6 +339,26 @@
     color: var(--accent);
     background: rgba(56, 189, 248, 0.08);
   }
+
+  /* Phase 4 — Profile readiness and UX polish */
+  .profile-badge {
+    font-size: 0.6rem; padding: 2px 8px; border-radius: 999px;
+    font-weight: 600; letter-spacing: 0.05em; display: inline-flex; align-items: center; gap: 4px;
+  }
+  .profile-badge.ready { background: rgba(74, 222, 128, 0.15); color: #86efac; }
+  .profile-badge.guarded { background: rgba(56, 189, 248, 0.15); color: #7dd3fc; }
+  .profile-badge.needs-tuning { background: rgba(251, 191, 36, 0.15); color: #fde68a; }
+  .profile-badge.advanced { background: rgba(168, 85, 247, 0.15); color: #d8b4fe; }
+  .profile-badge.not-recommended { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
+  .profile-badge.unknown { background: rgba(107, 114, 128, 0.15); color: #9ca3af; }
+  .settings-group-label {
+    font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em;
+    color: var(--text-muted); padding: 6px 0 2px 0; border-bottom: 1px solid rgba(148,163,184,0.1);
+    margin-top: 4px;
+  }
+  .drawer-section-active { border-left: 2px solid var(--accent); padding-left: 8px; }
+  .drawer-section-catalog { border-left: 2px solid rgba(148,163,184,0.2); padding-left: 8px; opacity: 0.8; }
+  .explanation-text { font-size: 0.68rem; color: var(--text-muted); line-height: 1.4; padding: 4px 8px; border-radius: 6px; background: rgba(15,23,42,0.4); border: 1px solid rgba(148,163,184,0.08); }
 </style></head>
 <body>
   <div class="app-shell">
@@ -1682,7 +1702,7 @@
         });
         html += '</div>';
       }
-      // Hazard/profile badges
+      // Hazard/profile badges with readiness label
       if (row.hazard_profile) {
         var hp = row.hazard_profile;
         var hazardChips = [];
@@ -1692,6 +1712,16 @@
         if (hp.default_behavior_risk) hazardChips.push('<span class="risk-pill ctx" style="font-size:0.55rem;">DEFAULT RISK</span>');
         if (hazardChips.length) {
           html += '<div style="display:flex; gap:3px; flex-wrap:wrap; margin-top:2px;">' + hazardChips.join("") + '</div>';
+        }
+        // Profile readiness label
+        if (hp.home_mode_recommended === false && hp.business_mode_allowed === true) {
+          html += '<span class="profile-badge advanced" title="' + escapeHtml(hp.recommended_action || "Advanced use only") + '">Advanced only</span>';
+        } else if (hp.requires_guard_profile) {
+          html += '<span class="profile-badge guarded" title="' + escapeHtml(hp.recommended_action || "Requires guarded profile") + '">Guarded</span>';
+        } else if (hp.cost_sensitive || hp.settings_sensitive) {
+          html += '<span class="profile-badge needs-tuning" title="' + escapeHtml(hp.recommended_action || "Needs attention") + '">Needs tuning</span>';
+        } else if (hp.home_mode_recommended === false) {
+          html += '<span class="profile-badge not-recommended" title="' + escapeHtml(hp.recommended_action || "Not recommended") + '">Not recommended</span>';
         }
       }
       // Effective settings chips — core values only
@@ -1714,6 +1744,9 @@
       html += '<div>Default allowed: ' + (row.default_allowed ? "Yes" : "No") + '</div>';
       html += '<div>Write allowed: ' + (row.write_allowed ? "Yes" : "No") + '</div>';
       if (row.next_action) html += '<div style="color:var(--text-warn);">Next: ' + escapeHtml(row.next_action) + '</div>';
+      if (row.hazard_profile && row.hazard_profile.default_risk_reason) {
+        html += '<div class="explanation-text" style="margin-top:4px;">' + escapeHtml(row.hazard_profile.default_risk_reason) + '</div>';
+      }
       html += '</div></details></div>';
       return html;
     }
@@ -2311,16 +2344,28 @@
     html += '<span class="pill"><span class="pill-dot bad"></span> Needs profile: ' + (hazardCounts.needs_profile || 0) + '</span>';
     html += '</div>';
 
-    // Per-model settings
+    // Per-model settings with grouped visual hierarchy
     perModel.forEach(function(m) {
       var settings = Array.isArray(m.effective_settings) ? m.effective_settings : [];
       var hp = m.hazard_profile || {};
-      var coreSettings = settings.filter(function(s) { return s.group === "core"; });
-      var samplingSettings = settings.filter(function(s) { return s.group === "sampling"; });
 
-      html += '<div class="list-item" style="margin-bottom:6px;">';
+      // Group settings by their group field
+      var groups = {};
+      settings.forEach(function(s) {
+        if (!groups[s.group]) groups[s.group] = [];
+        groups[s.group].push(s);
+      });
+
+      html += '<div class="list-item" style="margin-bottom:8px;">';
       html += '<div class="card-row"><div class="value mono" style="font-size:.8rem;">' + escapeHtml(m.alias) + '</div>';
       html += '<span class="small">' + escapeHtml(m.route_tier || "") + '</span></div>';
+
+      // Profile readiness label
+      if (hp.home_mode_recommended === false && hp.business_mode_allowed === true) {
+        html += '<span class="profile-badge advanced" style="margin:2px 0;">Advanced only</span>';
+      } else if (hp.requires_guard_profile) {
+        html += '<span class="profile-badge guarded" style="margin:2px 0;">Guarded</span>';
+      }
 
       // Hazard badges
       var hazardBadges = [];
@@ -2331,30 +2376,42 @@
         html += '<div style="display:flex; gap:3px; flex-wrap:wrap; margin:2px 0;">' + hazardBadges.join("") + '</div>';
       }
 
-      // Core settings chips
-      if (coreSettings.length) {
-        html += '<div style="display:flex; gap:4px; flex-wrap:wrap; margin-top:2px;">';
-        coreSettings.forEach(function(s) {
-          var valCls = s.risk_level === "risky" ? "value-bad" : (s.risk_level === "defaulted" ? "value-warn" : "value-ok");
-          var srcLabel = s.source === "explicit" ? "EXPLICIT" : (s.source === "config" ? "CONFIG" : (s.source === "ollama_default" ? "DEFAULT" : "FACTORY"));
-          html += '<span class="pill" style="font-size:0.6rem;" title="' + escapeHtml(s.label) + ': ' + escapeHtml(String(s.effective_value)) + ' | Source: ' + escapeHtml(s.source) + '">' +
-            escapeHtml(s.setting_id) + ': <span class="' + valCls + '">' + escapeHtml(String(s.effective_value)) + '</span>' +
-            ' <span class="small" style="opacity:.6;">' + srcLabel + '</span></span>';
-        });
-        html += '</div>';
-      }
+      // Render each group
+      var groupOrder = ["core", "sampling", "prompt_session", "ollama_server", "persistence"];
+      groupOrder.forEach(function(g) {
+        if (!groups[g]) return;
+        var isHomeVisible = groups[g][0].home_visible;
+        var groupLabel = groups[g][0].group_label || g;
 
-      // Sampling settings (Business Mode detail)
-      if (samplingSettings.length) {
-        html += '<details style="margin-top:2px;"><summary style="font-size:0.6rem; color:var(--text-muted);"><span>Sampling & source stack</span></summary>';
-        html += '<div class="details-body" style="font-size:0.65rem;">';
-        samplingSettings.forEach(function(s) {
-          var valCls = s.risk_level === "risky" ? "value-bad" : (s.risk_level === "defaulted" ? "value-warn" : "value-ok");
-          html += '<div class="card-row"><span class="label">' + escapeHtml(s.label) + '</span>' +
-            '<span class="value ' + valCls + ' mono">' + escapeHtml(String(s.effective_value)) + '</span>' +
-            '<span class="small" style="opacity:.6;">' + escapeHtml(s.source) + '</span></div>';
-        });
-        html += '</div></details>';
+        if (isHomeVisible) {
+          // Core: show inline chips
+          html += '<div class="settings-group-label">' + escapeHtml(groupLabel) + '</div>';
+          html += '<div style="display:flex; gap:4px; flex-wrap:wrap; margin-top:2px;">';
+          groups[g].forEach(function(s) {
+            var valCls = s.risk_level === "risky" ? "value-bad" : (s.risk_level === "defaulted" ? "value-warn" : "value-ok");
+            var srcLabel = s.source === "explicit" ? "EXPLICIT" : (s.source === "config" ? "CONFIG" : (s.source === "ollama_default" ? "DEFAULT" : "FACTORY"));
+            html += '<span class="pill" style="font-size:0.6rem;" title="' + escapeHtml(s.label) + ': ' + escapeHtml(String(s.effective_value)) + ' | Source: ' + escapeHtml(s.source) + '">' +
+              escapeHtml(s.setting_id) + ': <span class="' + valCls + '">' + escapeHtml(String(s.effective_value)) + '</span>' +
+              ' <span class="small" style="opacity:.6;">' + srcLabel + '</span></span>';
+          });
+          html += '</div>';
+        } else {
+          // Non-core: show in expandable detail
+          html += '<details style="margin-top:2px;"><summary style="font-size:0.6rem; color:var(--text-muted);"><span>' + escapeHtml(groupLabel) + '</span></summary>';
+          html += '<div class="details-body" style="font-size:0.65rem;">';
+          groups[g].forEach(function(s) {
+            var valCls = s.risk_level === "risky" ? "value-bad" : (s.risk_level === "defaulted" ? "value-warn" : "value-ok");
+            html += '<div class="card-row"><span class="label">' + escapeHtml(s.label) + '</span>' +
+              '<span class="value ' + valCls + ' mono">' + escapeHtml(String(s.effective_value)) + '</span>' +
+              '<span class="small" style="opacity:.6;">' + escapeHtml(s.source) + '</span></div>';
+          });
+          html += '</div></details>';
+        }
+      });
+
+      // Explanation text for sensitive models
+      if (hp.default_risk_reason) {
+        html += '<div class="explanation-text" style="margin-top:4px;">' + escapeHtml(hp.default_risk_reason) + '</div>';
       }
 
       html += '</div>';
@@ -2398,14 +2455,36 @@
   function renderWrappers() {
     const list = document.getElementById("wrapper-list");
     if (!list) return;
-    list.innerHTML = WRAPPER_DEFS.map(function(w) {
-      return '<div class="wrapper-row">' +
-        '<input type="checkbox" class="wr-checkbox" id="wr-' + w.id + '" ' + (w.checked ? "checked" : "") + ' onchange="onWrapperToggle(\'' + w.id + '\', this.checked)">' +
-        '<div class="wr-icon ' + w.iconClass + '">' + w.short + '</div>' +
-        '<div class="wr-info"><div class="wr-name">' + escapeHtml(w.label) + '</div><div class="wr-meta">' + escapeHtml(w.meta) + '</div></div>' +
-        '<span class="wr-chip ' + w.chipClass + '">' + w.chip + '</span>' +
-        '</div>';
-    }).join("");
+    var active = WRAPPER_DEFS.filter(function(w) { return w.checked; });
+    var catalog = WRAPPER_DEFS.filter(function(w) { return !w.checked; });
+    var html = '';
+    if (active.length) {
+      html += '<div class="settings-group-label">Active Wrappers</div>';
+      html += '<div class="drawer-section-active">';
+      html += active.map(function(w) {
+        return '<div class="wrapper-row">' +
+          '<input type="checkbox" class="wr-checkbox" id="wr-' + w.id + '" checked onchange="onWrapperToggle(\'' + w.id + '\', this.checked)">' +
+          '<div class="wr-icon ' + w.iconClass + '">' + w.short + '</div>' +
+          '<div class="wr-info"><div class="wr-name">' + escapeHtml(w.label) + '</div><div class="wr-meta">' + escapeHtml(w.meta) + '</div></div>' +
+          '<span class="wr-chip ' + w.chipClass + '">' + w.chip + '</span>' +
+          '</div>';
+      }).join("");
+      html += '</div>';
+    }
+    if (catalog.length) {
+      html += '<div class="settings-group-label" style="margin-top:8px;">Catalog Wrappers</div>';
+      html += '<div class="drawer-section-catalog">';
+      html += catalog.map(function(w) {
+        return '<div class="wrapper-row">' +
+          '<input type="checkbox" class="wr-checkbox" id="wr-' + w.id + '" onchange="onWrapperToggle(\'' + w.id + '\', this.checked)">' +
+          '<div class="wr-icon ' + w.iconClass + '">' + w.short + '</div>' +
+          '<div class="wr-info"><div class="wr-name">' + escapeHtml(w.label) + '</div><div class="wr-meta">' + escapeHtml(w.meta) + '</div></div>' +
+          '<span class="wr-chip ' + w.chipClass + '">' + w.chip + '</span>' +
+          '</div>';
+      }).join("");
+      html += '</div>';
+    }
+    list.innerHTML = html;
   }
 
   function onWrapperToggle(id, checked) {

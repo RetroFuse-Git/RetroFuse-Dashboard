@@ -1,0 +1,30 @@
+{
+  "phase4_version": "v0.1",
+  "phase": "DASHBOARD_PHASE4_UX_PROFILE_INTELLIGENCE",
+  "generated_at": "2026-06-23T21:15:00Z",
+  "phase3_push_result": "SUCCESS — baf1e0a..e682958 main -> main",
+  "ui_improvements": {
+    "gear_drawer": "Active/catalog section distinction with visual borders and group labels",
+    "model_cards": "Profile readiness labels, hazard explanation text, improved badge readability",
+    "effective_settings": "Grouped by Core/Sampling/Prompt/Session/Server/Persistence with visual hierarchy",
+    "hazard_profiles": "Display fields added: readiness_label, badge_class, explanation_short, explanation_long"
+  },
+  "data_model_additions": {
+    "hazard_profile_readiness_label": "Human-readable readiness status",
+    "hazard_profile_badge_class": "CSS class for profile badge styling",
+    "hazard_profile_explanation_short": "Short explanation for tooltips",
+    "hazard_profile_explanation_long": "Long explanation for detail sections"
+  },
+  "validation_script": "Tools/validation/validate_dashboard_phase4.ps1",
+  "forbidden_confirmed": [
+    "no_phase4_push",
+    "no_bolt",
+    "no_safepoint",
+    "no_daily_bundle",
+    "no_settings_mutation",
+    "no_launch",
+    "no_ollama_commands",
+    "no_modelfiles",
+    "no_wrapper_profiles"
+  ]
+}

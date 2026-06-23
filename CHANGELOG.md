@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.0 — UX/Profile Intelligence Polish (2026-06-23)
+
+- Gear drawer: active/catalog section distinction with visual borders and group labels
+- Profile readiness labels on model cards: Ready, Guarded, Needs tuning, Advanced only, Not recommended
+- Effective Settings section: settings grouped by Core/Sampling/Prompt/Session/Server/Persistence
+- Hazard profile explanation text in model card details section
+- Display fields added to hazard profiles (readiness_label, badge_class, explanation_short, explanation_long)
+- Added Tools/validation/validate_dashboard_phase4.ps1 validation script
+- All existing UI features and API endpoints preserved
+- No mutation enabled, no launch endpoint
+
 ## v1.9 — Frontend Template Hardening (2026-06-23)
 
 - Replaced embedded ~2500-line INDEX_HTML with _read_template_fallback() template reader

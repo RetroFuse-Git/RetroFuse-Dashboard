@@ -34,7 +34,16 @@
 - [ ] Workspace mapping
 - [ ] Authority levels
 
-## Phase 4 — Settings Mutation
+## Phase 4 — UX/Profile Intelligence Polish (complete)
+- [x] Gear drawer active/catalog section distinction with visual borders
+- [x] Profile readiness labels on model cards (Ready, Guarded, Needs tuning, Advanced only, Not recommended)
+- [x] Settings grouped by Core/Sampling/Prompt/Session/Server/Persistence in Effective Settings section
+- [x] Hazard profile explanation text in model card details
+- [x] Display fields added to hazard profiles (readiness_label, badge_class, explanation_short, explanation_long)
+- [x] Home Mode simplified view; Business Mode detailed provenance
+- [x] No mutation enabled
+
+## Phase 5 — Settings Mutation
 - [ ] Governed edit apply
 - [ ] Settings persistence
 - [ ] Rollback support

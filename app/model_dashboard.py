@@ -482,6 +482,10 @@ HAZARD_PROFILES = {
         "default_risk_reason": "Cost-sensitive cloud model. Default settings may incur unexpected charges. Use only with known-good guarded profile.",
         "recommended_action": "Configure guarded profile before use. Not recommended for casual Home Mode.",
         "profile_status": "NOT_CONFIGURED",
+        "readiness_label": "Advanced only",
+        "badge_class": "advanced",
+        "explanation_short": "Cost-sensitive, needs guarded profile",
+        "explanation_long": "This model requires a known-good guarded profile before use in any mode. Default settings may incur unexpected charges. Not recommended for casual Home Mode.",
     },
 }
 
@@ -497,6 +501,10 @@ DEFAULT_HAZARD_PROFILE = {
     "default_risk_reason": None,
     "recommended_action": None,
     "profile_status": "UNKNOWN",
+    "readiness_label": "Ready",
+    "badge_class": "ready",
+    "explanation_short": None,
+    "explanation_long": None,
 }
 
 
