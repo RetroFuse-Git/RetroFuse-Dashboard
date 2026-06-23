@@ -1,0 +1,9 @@
+﻿param(
+    [int]$Port = 8101
+)
+
+$dashRoot = "D:\RETROFUSE_OPS\Dashboard"
+Set-Location $dashRoot
+
+Write-Host "Starting RetroFuse OPS Dashboard on http://localhost:$Port ..." -ForegroundColor Cyan
+python -m uvicorn server:app --host 127.0.0.1 --port $Port --reload

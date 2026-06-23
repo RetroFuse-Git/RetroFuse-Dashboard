@@ -1,0 +1,20 @@
+{
+  "receipt_type": "dashboard_ui_integration_repair",
+  "timestamp_utc": "2026-06-23T17:30:00Z",
+  "authority": "DASHBOARD_RENDERING",
+  "success_state": "DASHBOARD_UI_INTEGRATION_REPAIRED",
+  "root_cause": "UI_TEMPLATE_STATIC_INTEGRATION_FAILURE",
+  "root_cause_detail": "templates/index.html was an older version without Models tab; embedded INDEX_HTML in server.py was never served",
+  "fix": "Updated templates/index.html with authoritative INDEX_HTML from server.py",
+  "files_modified": ["D:\\RETROFUSE_OPS\\Dashboard\\templates\\index.html"],
+  "verification": {
+    "html_served": true,
+    "content_type": "text/html",
+    "models_tab_present": true,
+    "mode_switch_present": true,
+    "all_cards_present": true,
+    "js_functions_present": true,
+    "api_endpoints_passing": true
+  },
+  "port_8101_note": "Still running stale code from June 18. Admin restart required."
+}

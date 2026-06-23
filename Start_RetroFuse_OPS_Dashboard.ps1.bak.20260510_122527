@@ -1,0 +1,28 @@
+﻿param(
+    [string]$OpsRoot = "D:\RETROFUSE_OPS",
+    [int]$Port = 8101
+)
+
+Write-Host "=== Start RetroFuse OPS Dashboard v1.0 ==="
+$dashboardRoot = Join-Path $OpsRoot "Dashboard"
+$appDir = Join-Path $dashboardRoot "app"
+$reqFile = Join-Path $dashboardRoot "requirements.txt"
+
+if (-not (Test-Path -Path $appDir -PathType Container)) {
+    Write-Error "Dashboard app directory not found at $appDir"
+    exit 1
+}
+
+if (-not (Test-Path -Path $reqFile -PathType Leaf)) {
+    Write-Warning "requirements.txt not found at $reqFile"
+} else {
+    Write-Host "Ensuring Python deps from requirements.txt (first run may take a bit)..."
+    python -m pip install -r $reqFile
+}
+
+Write-Host "Starting FastAPI dashboard on port $Port..."
+Write-Host "URL: http://localhost:$Port/"
+Write-Host ""
+
+Set-Location $appDir
+python -m uvicorn app_main:app --host 0.0.0.0 --port $Port

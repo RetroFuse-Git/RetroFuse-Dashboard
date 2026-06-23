@@ -1,0 +1,38 @@
+param(
+  [string]$DashRoot = 'D:\RETROFUSE_OPS\Dashboard',
+  [int]$Port = 8101,
+  [string]$TargetHost = '127.0.0.1'
+)
+$ErrorActionPreference = 'Stop'
+
+$workDir = Join-Path $DashRoot '_Work'
+$logPath = Join-Path $workDir 'OpsDashboard_Watchdog.log'
+$detachedStarter = 'D:\RETROFUSE_OPS\Scripts\Run_OpsDashboard_Detached.ps1'
+if (-not (Test-Path $workDir)) { New-Item -ItemType Directory -Path $workDir -Force | Out-Null }
+
+function Write-Log {
+  param([string]$Message, [string]$Level='INFO')
+  $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+  Add-Content -Path $logPath -Value ('[' + $ts + '] [' + $Level + '] ' + $Message)
+}
+
+Write-Log ('Watchdog tick. DashRoot=' + $DashRoot + ' Port=' + $Port + ' TargetHost=' + $TargetHost)
+
+if (-not (Test-Path -LiteralPath $detachedStarter)) {
+  Write-Log ('Detached starter missing: ' + $detachedStarter) 'ERROR'
+  exit 1
+}
+
+try {
+  & $detachedStarter
+  $code = if ($LASTEXITCODE -is [int]) { $LASTEXITCODE } else { 0 }
+  if ($code -eq 0) {
+    Write-Log 'Detached starter completed successfully.'
+    exit 0
+  }
+  Write-Log ('Detached starter returned non-zero exit code: ' + $code) 'WARN'
+  exit $code
+} catch {
+  Write-Log ('Watchdog tick failed: ' + $_.Exception.Message) 'ERROR'
+  exit 1
+}

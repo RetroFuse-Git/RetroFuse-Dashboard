@@ -1,0 +1,51 @@
+﻿param(
+  [string]$DashRoot = 'D:\RETROFUSE_OPS\Dashboard',
+  [int]$Port = 8101,
+  [int]$LoopSeconds = 30
+)
+
+$ErrorActionPreference = 'Stop'
+$WorkDir = Join-Path $DashRoot '_Work'
+if (!(Test-Path $WorkDir)) { New-Item -ItemType Directory -Path $WorkDir | Out-Null }
+$LogPath = Join-Path $WorkDir 'OpsDashboard_Watchdog.log'
+$StartScript = Join-Path $DashRoot 'Start_RetroFuse_OpsDashboard_Headless.ps1'
+$TargetHost = '127.0.0.1'
+
+function Write-Log([string]$Message, [string]$Level = 'INFO') {
+  $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+  Add-Content -Path $LogPath -Value ("[{0}] [{1}] {2}" -f $ts, $Level, $Message)
+}
+
+function Test-PortOpen([string]$TargetHost, [int]$TargetPort) {
+  try {
+    $client = New-Object System.Net.Sockets.TcpClient
+    $ar = $client.BeginConnect($TargetHost, $TargetPort, $null, $null)
+    $ok = $ar.AsyncWaitHandle.WaitOne(600)
+    if (-not $ok) { $client.Close(); return $false }
+    $null = $client.EndConnect($ar)
+    $client.Close()
+    return $true
+  } catch { return $false }
+}
+
+Write-Log "Watchdog started. DashRoot=$DashRoot Port=$Port"
+
+while ($true) {
+  try {
+    $up = Test-PortOpen -TargetHost $TargetHost -TargetPort $Port
+    if (-not $up) {
+      Write-Log "Dashboard DOWN on port $Port. Starting headless..." 'WARN'
+      if (Test-Path $StartScript) {
+        Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+          '-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',$StartScript
+        ) -WindowStyle Hidden | Out-Null
+        Start-Sleep -Seconds 2
+      } else {
+        Write-Log "Start script missing: $StartScript" 'ERROR'
+      }
+    }
+  } catch {
+    Write-Log ("Watchdog loop error: " + $_.Exception.Message) 'ERROR'
+  }
+  Start-Sleep -Seconds $LoopSeconds
+}

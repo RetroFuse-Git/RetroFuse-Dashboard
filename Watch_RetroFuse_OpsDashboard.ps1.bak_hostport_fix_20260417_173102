@@ -1,0 +1,149 @@
+﻿# ==========================================
+# RetroFuse_OPS_Dashboard_Watchdog_v1_1.ps1
+# One-shot watchdog (Scheduled Task runs this on an interval)
+# Writes Watchdog_LastCrash.json on failure
+# PS5.1 safe
+# ==========================================
+
+param(
+    [string]$DashRoot = "D:\RETROFUSE_OPS\Dashboard",
+    [int]$Port = 8101,
+    [string]$Host = "127.0.0.1",
+    [int]$StartWaitSeconds = 20
+)
+
+Set-StrictMode -Version 2.0
+$ErrorActionPreference = "Stop"
+
+$startScript = Join-Path $DashRoot "Start_RetroFuse_OpsDashboard.ps1"
+$logPath     = Join-Path $DashRoot "OpsDashboard_Watchdog.log"
+$workDir     = Join-Path $DashRoot "_Work"
+$crashJson   = Join-Path $workDir "Watchdog_LastCrash.json"
+
+function Ensure-Dir([string]$p) {
+    if (-not (Test-Path -LiteralPath $p)) {
+        New-Item -ItemType Directory -Path $p -Force | Out-Null
+    }
+}
+
+function Write-Log([string]$Message, [string]$Level = "INFO") {
+    Ensure-Dir (Split-Path -Parent $logPath)
+    $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    Add-Content -LiteralPath $logPath -Value "[$timestamp] [$Level] $Message"
+}
+
+function Test-PortOpen([string]$Host, [int]$Port) {
+    try {
+        $client = New-Object System.Net.Sockets.TcpClient
+        $async  = $client.BeginConnect($Host, $Port, $null, $null)
+        $wait   = $async.AsyncWaitHandle.WaitOne(500)
+        if (-not $wait) { $client.Close(); return $false }
+        $null = $client.EndConnect($async)
+        $client.Close()
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Write-CrashCapsule {
+    param(
+        [string]$Reason,
+        [int]$ExitCode = -1,
+        [string]$StdoutPath = "",
+        [string]$StderrPath = "",
+        [int]$LaunchedPid = 0
+    )
+
+    Ensure-Dir $workDir
+
+    $stderrTail = @()
+    if ($StderrPath -and (Test-Path -LiteralPath $StderrPath)) {
+        $stderrTail = Get-Content -LiteralPath $StderrPath -Tail 120
+    }
+
+    $stdoutTail = @()
+    if ($StdoutPath -and (Test-Path -LiteralPath $StdoutPath)) {
+        $stdoutTail = Get-Content -LiteralPath $StdoutPath -Tail 80
+    }
+
+    $obj = [ordered]@{
+        timestamp_local = (Get-Date).ToString("o")
+        host            = $Host
+        port            = $Port
+        dash_root       = $DashRoot
+        start_script    = $startScript
+        reason          = $Reason
+        exit_code       = $ExitCode
+        launched_pid    = $LaunchedPid
+        stdout_path     = $StdoutPath
+        stderr_path     = $StderrPath
+        stderr_tail     = $stderrTail
+        stdout_tail     = $stdoutTail
+    }
+
+    ($obj | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $crashJson -Encoding UTF8
+    Write-Log "Crash capsule written: $crashJson" "ERROR"
+}
+
+# ----------------------------
+# MAIN (one-shot)
+# ----------------------------
+Ensure-Dir $workDir
+Write-Log "Watchdog cycle begin. Root=$DashRoot Host=$Host Port=$Port"
+
+# If already up, do nothing (exit success)
+if (Test-PortOpen -Host $Host -Port $Port) {
+    Write-Log "Dashboard already listening on $Host:$Port. OK."
+    exit 0
+}
+
+Write-Log "Dashboard NOT detected on $Host:$Port. Attempting start..."
+
+if (-not (Test-Path -LiteralPath $startScript -PathType Leaf)) {
+    Write-Log "Start script missing: $startScript" "ERROR"
+    Write-CrashCapsule -Reason "START_SCRIPT_MISSING"
+    exit 2
+}
+
+# Redirect output so we always have a trace
+$stamp  = Get-Date -Format "yyyyMMdd_HHmmss"
+$stdout = Join-Path $workDir ("uvicorn_stdout_" + $stamp + ".log")
+$stderr = Join-Path $workDir ("uvicorn_stderr_" + $stamp + ".log")
+
+# Build a safe argument string (no broken quotes)
+$args = @(
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy", "Bypass",
+    "-File", $startScript
+)
+
+try {
+    $p = Start-Process -FilePath "powershell.exe" `
+        -ArgumentList $args `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $stdout `
+        -RedirectStandardError  $stderr `
+        -PassThru
+
+    Write-Log ("Start script launched. PID=" + $p.Id + " stdout=" + $stdout + " stderr=" + $stderr)
+} catch {
+    Write-Log ("Failed to launch start script: " + $_.Exception.Message) "ERROR"
+    Write-CrashCapsule -Reason ("START_LAUNCH_FAIL: " + $_.Exception.Message) -StdoutPath $stdout -StderrPath $stderr
+    exit 3
+}
+
+Start-Sleep -Seconds $StartWaitSeconds
+
+# Re-test port
+if (Test-PortOpen -Host $Host -Port $Port) {
+    Write-Log "Dashboard is now UP on $Host:$Port. OK."
+    exit 0
+}
+
+# Not up — likely uvicorn import/syntax crash; capture tails
+Write-Log "Dashboard still DOWN after start attempt." "ERROR"
+Write-CrashCapsule -Reason "STARTED_BUT_PORT_DOWN" -StdoutPath $stdout -StderrPath $stderr -LaunchedPid $p.Id
+exit 4

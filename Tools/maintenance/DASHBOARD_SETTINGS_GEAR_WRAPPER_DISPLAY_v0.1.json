@@ -1,0 +1,131 @@
+{
+  "wrappers": [
+    {
+      "id": "ollama_direct",
+      "status": "CONFIGURED",
+      "label": "Ollama Direct",
+      "default_enabled": true,
+      "class": "PREFERRED"
+    },
+    {
+      "id": "codex",
+      "status": "CONFIGURED",
+      "label": "Codex",
+      "default_enabled": true,
+      "class": "PREFERRED"
+    },
+    {
+      "id": "claude_code",
+      "status": "CONFIGURED",
+      "label": "Claude Code",
+      "default_enabled": true,
+      "class": "PREFERRED"
+    },
+    {
+      "id": "openclaw",
+      "status": "UNKNOWN",
+      "label": "OpenClaw",
+      "default_enabled": true,
+      "class": "SUPPORTED"
+    },
+    {
+      "id": "copilot",
+      "status": "UNKNOWN",
+      "label": "Copilot",
+      "default_enabled": false,
+      "class": "SUPPORTED"
+    },
+    {
+      "id": "gemini",
+      "status": "DEFERRED",
+      "label": "Gemini",
+      "default_enabled": false,
+      "class": "SUPPORTED"
+    },
+    {
+      "id": "opencode",
+      "status": "NOT_PREFERRED",
+      "label": "OpenCode",
+      "default_enabled": false,
+      "class": "OPTIONAL"
+    },
+    {
+      "id": "aider",
+      "status": "NOT_CONFIGURED",
+      "label": "Aider",
+      "default_enabled": false,
+      "class": "OPTIONAL"
+    },
+    {
+      "id": "continue",
+      "status": "NOT_CONFIGURED",
+      "label": "Continue",
+      "default_enabled": false,
+      "class": "OPTIONAL"
+    },
+    {
+      "id": "cursor",
+      "status": "NOT_CONFIGURED",
+      "label": "Cursor",
+      "default_enabled": false,
+      "class": "OPTIONAL"
+    },
+    {
+      "id": "cline_roo",
+      "status": "NOT_CONFIGURED",
+      "label": "Cline / Roo",
+      "default_enabled": false,
+      "class": "OPTIONAL"
+    },
+    {
+      "id": "goose",
+      "status": "NOT_CONFIGURED",
+      "label": "Goose",
+      "default_enabled": false,
+      "class": "OPTIONAL"
+    },
+    {
+      "id": "custom_wrapper",
+      "status": "PLACEHOLDER",
+      "label": "Custom Wrapper",
+      "default_enabled": false,
+      "class": "CUSTOM"
+    }
+  ],
+  "task": "DASHBOARD_UI_SETUP_SHELL",
+  "notes": [
+    "UI-only shell — no persistence, no launch, no settings mutation",
+    "Wrapper checkbox changes are UI-only for this phase",
+    "Optional wrappers are catalog-only; not added to main Models board",
+    "Stale .pyc cache cleared to resolve 404 on assets/routing endpoints",
+    "Port 8102 running updated code; port 8101 still needs admin restart"
+  ],
+  "validation": [
+    "Server compiles OK",
+    "/api/models/dashboard?mode=home OK",
+    "/api/models/dashboard?mode=business OK",
+    "/api/models/assets OK",
+    "/api/models/routing-eligibility OK",
+    "No settings mutation enabled",
+    "No one-click launch implemented",
+    "No SAFEPOINT/continuity changes"
+  ],
+  "changes": [
+    "Added gear icon in dashboard header meta-bar",
+    "Added slide-out settings drawer (420px, right side)",
+    "Added Displayed Wrappers section with 13 wrapper rows",
+    "Added 6 future section placeholders",
+    "Synced server.py INDEX_HTML with templates/index.html"
+  ],
+  "future_sections": [
+    "Appearance",
+    "Profiles",
+    "Wrapper Catalog",
+    "Provider Assets",
+    "Model Settings Baselines",
+    "Launch Profiles"
+  ],
+  "version": "v0.1",
+  "timestamp": "2026-06-23T15:03:29-04:00",
+  "success_state": "DASHBOARD_SETTINGS_GEAR_WRAPPER_DISPLAY_ADDED"
+}

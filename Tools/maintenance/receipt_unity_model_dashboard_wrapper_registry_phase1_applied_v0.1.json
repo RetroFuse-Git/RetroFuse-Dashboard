@@ -1,0 +1,58 @@
+{
+  "receipt_type": "wrapper_registry_phase1_applied",
+  "phase": "PHASE1_WRAPPER_VISIBILITY_APPLIED",
+  "registry_version": "v0.1",
+  "timestamp_utc": "2026-06-23T19:45:00Z",
+  "operator": "claude_code_bounded_write_lane",
+  "authority": "DASHBOARD_WRAPPER_VISIBILITY_PHASE1_APPLY_AND_COMMIT_NO_PUSH",
+  "files_changed": [
+    {
+      "path": "D:\\RETROFUSE_OPS\\Dashboard\\app\\model_dashboard.py",
+      "change": "Added WRAPPER_REGISTRY (13 wrappers), WRAPPER_CLASSES, EVIDENCE_STATUSES, build_wrapper_registry(), wrapper chips in model row output"
+    },
+    {
+      "path": "D:\\RETROFUSE_OPS\\Dashboard\\server.py",
+      "change": "Added build_wrapper_registry import, /api/models/wrappers endpoint, wrapper chips in embedded INDEX_HTML renderCard, Wrapper Registry section card, JS rendering functions"
+    },
+    {
+      "path": "D:\\RETROFUSE_OPS\\Dashboard\\templates\\index.html",
+      "change": "Added wrapper chips to model cards, Wrapper Registry section card, JS rendering functions with auto-refresh"
+    }
+  ],
+  "validation_results": {
+    "python_compile_model_dashboard": "PASS",
+    "python_compile_server": "PASS",
+    "get_api_models_wrappers": "PASS (200, 13 total, 4 active, 9 catalog)",
+    "get_api_models_dashboard_home": "PASS (200)",
+    "get_api_models_dashboard_business": "PASS (200)",
+    "get_api_models_edit_receipts": "PASS (200)",
+    "get_api_models_assets": "PASS (200)",
+    "get_api_models_routing_eligibility": "PASS (200)",
+    "no_launch_endpoint": "CONFIRMED",
+    "no_settings_mutation": "CONFIRMED",
+    "no_safepoint_continuity_changes": "CONFIRMED"
+  },
+  "registry_shape_verified": {
+    "total_wrappers": 13,
+    "active_main_board": ["ollama_direct", "codex", "claude_code", "openclaw"],
+    "catalog_only": ["copilot", "gemini", "opencode", "aider", "continue", "cursor", "cline_roo", "goose", "custom_wrapper"],
+    "unknown_evidence_preserved": ["openclaw", "copilot"],
+    "by_class": {"PREFERRED": 3, "SUPPORTED": 3, "OPTIONAL": 6, "CUSTOM": 1},
+    "by_evidence": {"CONFIGURED": 3, "UNKNOWN": 2, "DEFERRED_MODEL_SELECTION": 1, "NOT_CONFIGURED": 6, "PLACEHOLDER": 1}
+  },
+  "forbidden_items_confirmed_not_violated": [
+    "no_one_click_launch",
+    "no_settings_mutation",
+    "no_wrapper_selection_persistence",
+    "no_catalog_only_wrappers_on_main_cards",
+    "no_model_wrapper_settings_changed",
+    "no_safepoint_continuity_changes",
+    "no_hardcoded_pricing_quota",
+    "no_unrelated_template_debt"
+  ],
+  "commit": {
+    "status": "PENDING",
+    "push": false
+  },
+  "success_state": "UNITY_MODEL_DASHBOARD_WRAPPER_REGISTRY_PHASE1_APPLIED_AND_COMMITTED_NO_PUSH"
+}

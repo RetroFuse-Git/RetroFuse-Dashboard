@@ -1,0 +1,8 @@
+param([int]$Port = 8101)
+$ErrorActionPreference = 'Stop'
+$dashRoot = 'D:\RETROFUSE_OPS\Dashboard'
+$venvPy  = Join-Path $dashRoot '.venv\Scripts\python.exe'
+if(!(Test-Path $venvPy)){ throw 'Dashboard venv python not found: ' + $venvPy }
+Set-Location $dashRoot
+Write-Host "Starting RetroFuse OPS Dashboard on http://127.0.0.1:$Port/ ..."
+& $venvPy -u -m uvicorn server:app --host 127.0.0.1 --port $Port

@@ -1,0 +1,507 @@
+# RetroFuse OPS Dashboard server.py (v1.8_lineage_gate)
+# - Snapshot & Overview: includes OPS Signals pills (4)
+# - Browser Telemetry: collapsible RC1/RC2/RC3/Renderers/GPU (NO pills here)
+# - Disks, SAFEPOINT, Alpha, Notes: restored
+# - Bolt Lineage Gate: v1.8 Triple-Match (State|Receipt|Provenance)
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+import subprocess
+import shutil
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+import time
+
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse, JSONResponse
+
+APP_VERSION = "v1.8_lineage_gate"
+
+OPS_ROOT = Path(r"D:\RETROFUSE_OPS")
+STATUS_DIR = OPS_ROOT / "Status" / "RFCC"
+
+# Ops signals JSON (produced by DailyCheck)
+OPS_SIGNALS_JSON = STATUS_DIR / "ops_signals.json"
+
+# Alpha capture location
+ALPHA_RAW_DIR = OPS_ROOT / "Alpha" / "Raw"
+
+# SAFEPOINT roots
+ARCHIVE_ROOTS = [
+    Path(r"D:\PORTTORETRO_ARCHIVE"),
+    Path(r"D:\PORTTORETRO_ARCHIVE\SAFEPOINT_ENGINE\SAFEPOINTS"),
+]
+
+# Bolt RC2 controller paths
+BOLT_ROOT = Path(r"D:\PORTTORETRO_ARCHIVE\PROJECTS\Bolt")
+BOLT_SHELL_ROOT = BOLT_ROOT / "RC2" / "Shell" / "BoltShell"
+BOLT_HEART_DIR = BOLT_ROOT / "_DailyBundles" / "HeartBundles"
+BOLT_STATE = BOLT_SHELL_ROOT / "controller_state.json"
+BOLT_CMDLOG = BOLT_SHELL_ROOT / "cmdlog.jsonl"
+BOLT_LOCK = BOLT_SHELL_ROOT / "controller.lock"
+BOLT_STARTUP_RECEIPT = BOLT_ROOT / "RC2" / "Logs" / "startup_receipt_latest.md"
+BOLT_PROVENANCE = BOLT_ROOT / "RC2" / "Logs" / "startup_provenance.jsonl"
+
+# Orchestrator
+ORCH_LOG_DIR = OPS_ROOT / "Logs" / "OPS_COO"
+ORCH_LATEST = ORCH_LOG_DIR / "OpsCOO_Daily_Orchestrator_Latest.json"
+ORCH_LOCK = ORCH_LOG_DIR / "OpsCOO_Daily_Orchestrator.lock"
+
+app = FastAPI(title="RetroFuse OPS Dashboard", version=APP_VERSION)
+
+# ----------------------------------------------------------------------------
+# Backend Helpers
+# ----------------------------------------------------------------------------
+
+def _read_json(path: Path) -> Optional[Any]:
+    try:
+        if not path.exists(): return None
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception: return None
+
+def _read_markdown_kv(path: Path) -> Dict[str, str]:
+    if not path.exists(): return {}
+    out: Dict[str, str] = {}
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+        for line in content.splitlines():
+            m = re.match(r"^\-\s+([^:]+):\s*(.*)$", line)
+            if m: out[m.group(1).strip()] = m.group(2)
+    except Exception: pass
+    return out
+
+def _safe_stat_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except Exception:
+        return 0.0
+
+def _derive_bolt_boot_status() -> Tuple[str, str]:
+    """
+    Derives boot status from release-gate lineage artifacts.
+    Expected Lineage = {controller_pid}|{runtime_verified_utc}|{current_target_id}
+    """
+    if not BOLT_STATE.exists() or not BOLT_STARTUP_RECEIPT.exists() or not BOLT_PROVENANCE.exists():
+        return "UNKNOWN", "Missing required startup artifacts."
+
+    try:
+        # 1. Derive Expected Lineage from Controller State
+        state = _read_json(BOLT_STATE) or {}
+        c_pid = state.get("controller_pid")
+        c_rv = state.get("runtime_verified_utc")
+        c_tid = state.get("current_target_id")
+        
+        if not all([c_pid, c_rv, c_tid]):
+            return "UNKNOWN", "Incomplete lineage fields in state."
+        
+        expected_lineage = f"{c_pid}|{c_rv}|{c_tid}"
+
+        # 2. Extract Session from Receipt
+        receipt_kv = _read_markdown_kv(BOLT_STARTUP_RECEIPT)
+        receipt_session = receipt_kv.get("startup_session_id")
+        if not receipt_session:
+            return "UNKNOWN", "Missing startup_session_id in receipt."
+
+        # 3. Extract Session from Latest Written Provenance Entry
+        prov_session = None
+        with open(BOLT_PROVENANCE, "r", encoding="utf-8") as f:
+            for line in reversed(list(f)):
+                line = line.strip()
+                if not line: continue
+                try:
+                    entry = json.loads(line)
+                    if entry.get("phase") == "receipt" and entry.get("status") == "written":
+                        prov_session = entry.get("startup_session_id")
+                        break
+                except json.JSONDecodeError:
+                    continue
+        
+        if not prov_session:
+            return "UNKNOWN", "No valid provenance receipt found."
+
+        # 4. Verification Gate (Triple-Match)
+        if expected_lineage == receipt_session == prov_session:
+            return "STRICT_CLEAN", "Lineage verified across artifacts."
+        
+        return "ARTIFACT_DRIFT", "Controller/receipt/provenance session mismatch."
+
+    except Exception as e:
+        return "UNKNOWN", f"Lineage error: {str(e)}"
+
+# ----------------------------------------------------------------------------
+# Telemetry Helpers
+# ----------------------------------------------------------------------------
+
+def _ps_json() -> List[Dict[str, Any]]:
+    try:
+        cmd = ["powershell", "-NoProfile", "-Command", "Get-CimInstance Win32_Process | Select-Object ProcessId, Name, CommandLine, CreationDate | ConvertTo-Json"]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if not res.stdout.strip(): return []
+        data = json.loads(res.stdout)
+        return data if isinstance(data, list) else [data]
+    except Exception: return []
+
+def _list_browser_procs() -> List[Dict[str, Any]]:
+    all_ps = _ps_json()
+    browsers = []
+    for p in all_ps:
+        name = (p.get("Name") or "").lower()
+        cmd = (p.get("CommandLine") or "").lower()
+        if "chrome.exe" in name or "msedge.exe" in name or "brave.exe" in name:
+            browsers.append(p)
+    return browsers
+
+def _detect_rc1(procs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    for p in procs:
+        cmd = (p.get("CommandLine") or "").lower()
+        if "ungoogled-chromium" in cmd:
+            return {"status": "running", "pid": p.get("ProcessId")}
+    return {"status": "idle"}
+
+def _detect_rc2(procs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    for p in procs:
+        cmd = (p.get("CommandLine") or "").lower()
+        if "bolt" in cmd or "porttoretro" in cmd:
+            return {"status": "running", "pid": p.get("ProcessId")}
+    return {"status": "idle"}
+
+# ----------------------------------------------------------------------------
+# Snapshot Logic
+# ----------------------------------------------------------------------------
+
+def _get_latest_signals() -> Dict[str, Any]:
+    return _read_json(OPS_SIGNALS_JSON) or {}
+
+def _get_alpha_stats() -> Dict[str, Any]:
+    if not ALPHA_RAW_DIR.exists(): return {"count": 0}
+    files = list(ALPHA_RAW_DIR.glob("*"))
+    return {"count": len(files), "latest": max([f.stat().st_mtime for f in files]) if files else 0}
+
+def _get_safepoint_stats() -> List[Dict[str, Any]]:
+    stats = []
+    for root in ARCHIVE_ROOTS:
+        if root.exists():
+            stats.append({"path": str(root), "count": len(list(root.glob("*")))})
+    return stats
+
+# ----------------------------------------------------------------------------
+# Bolt Domain Logic
+# ----------------------------------------------------------------------------
+
+def _bolt_controller_state() -> Dict[str, Any]:
+    state = _read_json(BOLT_STATE) or {}
+    lock = _read_json(BOLT_LOCK)
+    if isinstance(lock, dict):
+        state["lock"] = lock
+    return state
+
+def _bolt_recent_cmdlog(n: int) -> List[Dict[str, Any]]:
+    if not BOLT_CMDLOG.exists(): return []
+    try:
+        lines = BOLT_CMDLOG.read_text(encoding="utf-8").splitlines()
+        out = []
+        for line in reversed(lines[-n:]):
+            try: out.append(json.loads(line))
+            except: continue
+        return out
+    except: return []
+
+def _bolt_recent_hearts(n: int) -> List[Dict[str, Any]]:
+    if not BOLT_HEART_DIR.exists(): return []
+    files = sorted(BOLT_HEART_DIR.glob("HEART_EXTRACT_*.md"), key=lambda p: p.stat().st_mtime, reverse=True)[:n]
+    out = []
+    for f in files:
+        mtime_iso = datetime.fromtimestamp(f.stat().st_mtime).isoformat()
+        out.append({
+            "name": f.name,
+            "size_bytes": f.stat().st_size,
+            "mtime": mtime_iso,
+            "preview": f.read_text(encoding="utf-8")[:200] if f.stat().st_size < 10000 else "(large file)"
+        })
+    return out
+
+def _build_bolt_snapshot() -> Dict[str, Any]:
+    state = _bolt_controller_state()
+    cmdlog = _bolt_recent_cmdlog(20)
+    hearts = _bolt_recent_hearts(5)
+    
+    # 1. Lineage Gate Derivation
+    boot_status, boot_status_reason = _derive_bolt_boot_status()
+
+    # 2. Preserve v1.7 Runtime Logic
+    lock = state.get("lock", {})
+    lock_pid = lock.get("pid") if isinstance(lock, dict) else None
+    governor_active = bool(state.get("governor_active", False))
+    last_seen = state.get("controller_last_seen_utc", None)
+    target_url = state.get("current_target_url", None)
+
+    if lock_pid:
+        controller_status = "running"
+    elif last_seen:
+        controller_status = "stale"
+    else:
+        controller_status = "unknown"
+
+    receipt = _read_markdown_kv(BOLT_STARTUP_RECEIPT)
+
+    return {
+        "boot_status": boot_status,
+        "boot_status_reason": boot_status_reason,
+        "controller_status": controller_status,
+        "controller_pid": lock_pid,
+        "governor_active": governor_active,
+        "target_url": target_url,
+        "last_seen_utc": last_seen,
+        "last_heart_bundle": state.get("last_heart_bundle"),
+        "last_heart_written_utc": state.get("last_heart_written_utc"),
+        "inbox_index": state.get("inbox_index"),
+        "startup_receipt_latest": str(BOLT_STARTUP_RECEIPT) if BOLT_STARTUP_RECEIPT.exists() else "",
+        "startup_session_id": receipt.get("startup_session_id", ""),
+        "startup_runtime_verified_utc": receipt.get("runtime_verified_utc", ""),
+        "startup_receipt_generated_utc": receipt.get("receipt_generated_utc", ""),
+        "cmdlog": cmdlog,
+        "hearts": hearts,
+        "state_excerpt": {
+            "controller_pid": lock_pid,
+            "last_heart_bundle": state.get("last_heart_bundle"),
+            "last_heartbeat_utc": state.get("last_heart_written_utc"),
+            "governor_active": governor_active,
+            "governor_target_url": target_url
+        }
+    }
+
+# ----------------------------------------------------------------------------
+# HTML Interface (v1.8 INTEGRATED)
+# ----------------------------------------------------------------------------
+
+INDEX_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>RetroFuse OPS Dashboard v1.8</title>
+  <style>
+    :root {
+      --bg: #020617;
+      --card: #0f172a;
+      --border: #1e293b;
+      --border-subtle: #334155;
+      --text: #f1f5f9;
+      --text-dim: #94a3b8;
+      --text-muted: #64748b;
+      --accent: #38bdf8;
+      --value-ok: #4ade80;
+      --value-warn: #fbbf24;
+      --value-bad: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      margin: 0;
+      padding: 20px;
+      line-height: 1.4;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+      gap: 16px;
+    }
+    .card {
+      background-color: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+    }
+    .card-title {
+      font-size: 0.85rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05rem;
+      margin-bottom: 12px;
+      color: var(--accent);
+      display: flex;
+      justify-content: space-between;
+    }
+    .label {
+      font-size: 0.65rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.05rem;
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+    .value {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .value-ok { color: var(--value-ok); }
+    .value-warn { color: var(--value-warn); }
+    .value-bad { color: var(--value-bad); }
+    .mono {
+      font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+      font-size: 0.8rem;
+    }
+    .small { font-size: 0.75rem; }
+    .small-dim { font-size: 0.7rem; color: var(--text-dim); }
+    hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.65rem;
+      font-weight: 800;
+      background: #1e293b;
+      border: 1px solid var(--border-subtle);
+      margin-right: 4px;
+    }
+    details summary {
+      cursor: pointer;
+      font-size: 0.75rem;
+      color: var(--accent);
+      padding: 4px 0;
+      outline: none;
+    }
+    .list { margin-top: 4px; }
+    .list-item {
+      padding: 4px 0;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: space-between;
+    }
+    .card-row { display: flex; justify-content: space-between; align-items: flex-end; }
+  </style>
+</head>
+<body>
+
+  <div style="margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
+    <h2 style="margin:0; font-weight:800; letter-spacing:-0.02rem;">RETROFUSE <span style="font-weight:300; color:var(--text-dim);">OPS DASHBOARD</span></h2>
+    <div class="pill" id="version-tag" style="border-color:var(--accent); color:var(--accent);">v1.8_lineage_gate</div>
+  </div>
+
+  <div class="grid">
+    <div class="card" id="signals-card">
+      <div class="card-title">System Signals</div>
+      <div id="signals-content">Loading...</div>
+    </div>
+
+    <div class="card" id="bolt-card">
+      <div class="card-title">Bolt RC2 Controller</div>
+      <div id="bolt-content">Loading...</div>
+    </div>
+
+    <div class="card" id="alpha-card">
+      <div class="card-title">Alpha Capture / Storage</div>
+      <div id="alpha-content">Loading...</div>
+    </div>
+  </div>
+
+  <script>
+    function escapeHtml(s) {
+      return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    function boltBootClass(s) {
+      const v = (s || "UNKNOWN").toUpperCase();
+      if (v === "STRICT_CLEAN") return "value-ok";
+      if (v === "ARTIFACT_DRIFT") return "value-warn";
+      return "value-bad";
+    }
+
+    function boltRuntimeClass(s) {
+      const v = (s || "unknown").toLowerCase();
+      if (v === "running") return "value-ok";
+      if (v === "stale") return "value-warn";
+      return "value-bad";
+    }
+
+    function renderSignals(data) {
+      const div = document.getElementById("signals-content");
+      div.innerHTML = `
+        <div style="display:flex; gap:8px; margin-bottom:12px;">
+          <div class="pill" style="color:var(--value-ok)">DASHBOARD: UP</div>
+          <div class="pill">ENV: RY7_5700G</div>
+        </div>
+        <div class="label">Last Scan</div>
+        <div class="value small mono">${new Date().toISOString()}</div>
+      `;
+    }
+
+    function renderBolt(bolt) {
+      const div = document.getElementById("bolt-content");
+      const bootStatus = bolt.boot_status || "UNKNOWN";
+      const bootReason = bolt.boot_status_reason || "";
+      const runStatus = bolt.controller_status || "unknown";
+
+      div.innerHTML = `
+        <div style="display:grid; grid-template-columns: 1fr 2.5fr; gap:8px; margin-bottom:12px; border-bottom:1px solid var(--border-subtle); padding-bottom:8px;">
+          <div>
+            <div class="label">Boot Status</div>
+            <div class="value ${boltBootClass(bootStatus)}">${escapeHtml(bootStatus)}</div>
+          </div>
+          <div>
+            <div class="label">Lineage Reason</div>
+            <div class="small-dim" style="line-height:1.2;">${escapeHtml(bootReason)}</div>
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:8px; margin-bottom:8px;">
+          <div><div class="label">Status</div><div class="value ${boltRuntimeClass(runStatus)}">${runStatus}</div></div>
+          <div><div class="label">PID</div><div class="value mono">${bolt.controller_pid || "n/a"}</div></div>
+          <div><div class="label">Governor</div><div class="value ${bolt.governor_active?'value-ok':'value-warn'}">${bolt.governor_active?'active':'inactive'}</div></div>
+          <div><div class="label">Inbox</div><div class="value mono">${bolt.inbox_index || 0}</div></div>
+        </div>
+
+        <div class="label">Active Target</div>
+        <div class="mono" style="font-size:0.68rem; margin-bottom:8px; color:var(--accent);">${escapeHtml(bolt.target_url || "none")}</div>
+        
+        <details>
+          <summary>Command Log (Last 20)</summary>
+          <div class="list">
+            ${(bolt.cmdlog || []).map(e => `<div class="list-item mono small-dim">${e.ts} [${e.status}] ${e.cmd}</div>`).join("")}
+          </div>
+        </details>
+
+        <details style="margin-top:4px;">
+          <summary>Heart Summary</summary>
+          <div class="list">
+            ${(bolt.hearts || []).map(h => `<div class="list-item small-dim"><span>${h.name}</span><span>${Math.round(h.size_bytes/1024)}KB</span></div>`).join("")}
+          </div>
+        </details>
+      `;
+    }
+
+    async function refresh() {
+      try {
+        const r = await fetch("/api/bolt?nc=" + Date.now());
+        const data = await r.json();
+        renderBolt(data);
+        renderSignals({});
+      } catch (e) { console.error("Refresh Error:", e); }
+    }
+
+    refresh();
+    setInterval(refresh, 10000);
+  </script>
+</body>
+</html>
+"""
+
+@app.get("/", response_class=HTMLResponse)
+def index(): return HTMLResponse(INDEX_HTML)
+
+@app.get("/api/bolt")
+def api_bolt(): return JSONResponse(_build_bolt_snapshot())
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8101)

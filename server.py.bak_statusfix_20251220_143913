@@ -1,0 +1,220 @@
+﻿from fastapi import FastAPI
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pathlib import Path
+import json
+import datetime as dt
+
+app = FastAPI(title="RetroFuse OPS Dashboard v1.4")
+
+from pathlib import Path
+import json
+
+@app.get("/api/latest")
+def api_latest():
+    p = Path(r"D:\RETROFUSE_OPS\Status\RFCC")
+    files = sorted(p.glob("DailyCheck_*.json"), key=lambda x: x.stat().st_mtime, reverse=True)
+
+    if not files:
+        return {"ok": False, "error": "No DailyCheck files found"}
+
+    f = files[0]
+    data = json.loads(f.read_text(encoding="utf-8-sig"))
+
+    return {
+        "ok": True,
+        "file": f.name,
+        "timestamp": data.get("timestamp"),
+        "rc1": data.get("rc1", {}).get("status"),
+        "rc3": data.get("rc3", {}).get("status"),
+        "renderers": data.get("renderers", {}).get("renderer_count"),
+        "gpu_processes": data.get("gpu_pipeline", {}).get("gpu_process_count"),
+    }
+
+
+@app.get("/_health")
+def _health():
+    return { "status": "ok" }
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# -------------------------------------------------------------------
+# Embedded HTML template (v1.4 with Browser Telemetry panel)
+# -------------------------------------------------------------------
+
+INDEX_HTML = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>RetroFuse OPS Dashboard</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Arial;margin:16px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+    .card{border:1px solid #3333;border-radius:12px;padding:12px}
+    .k{opacity:.75;font-size:12px}
+    .v{font-size:18px;font-weight:600;word-break:break-word}
+    pre{white-space:pre-wrap;word-break:break-word;max-height:420px;overflow:auto}
+    details{border:1px dashed #3336;border-radius:12px;padding:10px}
+  </style>
+</head>
+<body>
+  <h2>RetroFuse OPS Dashboard</h2>
+  <div class="grid" id="summary"></div>
+
+  <details style="margin-top:12px">
+    <summary><b>Raw details</b> (click to expand)</summary>
+    <div style="margin-top:8px">
+      <button id="loadRaw">Load raw JSON</button>
+      <pre id="raw">(not loaded)</pre>
+    </div>
+  </details>
+
+<script>
+async function loadSummary(){
+  const r = await fetch("/api/latest");
+  const j = await r.json();
+  const rows = [
+    ["ok", j.ok],
+    ["file", j.file],
+    ["timestamp", j.timestamp],
+    ["rc1", j.rc1],
+    ["rc3", j.rc3],
+    ["renderers", j.renderers],
+    ["gpu_processes", j.gpu_processes]
+  ];
+  const el = document.getElementById("summary");
+  el.innerHTML = rows.map(([k,v]) =>
+    `<div class="card"><div class="k">${k}</div><div class="v">${String(v)}</div></div>`
+  ).join("");
+}
+async function loadRaw(){
+  const r = await fetch("/api/latest_full");
+  const j = await r.json();
+  document.getElementById("raw").textContent = JSON.stringify(j, null, 2);
+}
+document.getElementById("loadRaw").addEventListener("click", loadRaw);
+loadSummary();
+</script>
+</body>
+</html>
+"""
+
+# -------------------------------------------------------------------
+# Routes
+# -------------------------------------------------------------------
+
+STATUS_DIR = Path(r"D:\RETROFUSE_OPS\Status\RFCC")
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index() -> HTMLResponse:
+    return HTMLResponse(INDEX_HTML)
+
+
+@app.get("/api/latest", response_class=JSONResponse)
+async def api_latest() -> JSONResponse:
+    """
+    Return the newest DailyCheck_*.json snapshot, decoded with utf-8-sig
+    to handle BOM safely.
+    """
+    if not STATUS_DIR.exists():
+        return JSONResponse(
+            {"error": f"Status directory not found: {STATUS_DIR}"},
+            status_code=404,
+        )
+
+
+@app.get("/api/latest_full")
+async def _load_latest_snapshot():
+    """
+    Return the newest DailyCheck_*.json snapshot, decoded with utf-8-sig (BOM-safe).
+    """
+    import glob, os, json
+
+    # Prefer a repo-local logs folder if present; fall back to current working dir.
+    # This keeps the dashboard resilient to minor folder moves.
+    candidates = []
+    for base in [
+        os.path.join(os.path.dirname(__file__), "logs"),
+        os.path.join(os.path.dirname(__file__), "Logs"),
+        os.path.dirname(__file__),
+    ]:
+        candidates.extend(glob.glob(os.path.join(base, "DailyCheck_*.json")))
+
+    if not candidates:
+        return None
+
+    newest = max(candidates, key=lambda p: os.path.getmtime(p))
+    with open(newest, "r", encoding="utf-8-sig") as f:
+        return json.load(f)
+
+def api_latest_full():
+    # full snapshot payload (can be large)
+    data = _load_latest_snapshot()
+    return JSONResponse(data)
+    files = sorted(STATUS_DIR.glob("DailyCheck_*.json"), key=lambda p: p.stat().st_mtime)
+    if not files:
+        return JSONResponse(
+            {"error": "No DailyCheck_*.json snapshots found."},
+            status_code=404,
+        )
+
+    latest = files[-1]
+
+    try:
+        text = latest.read_text(encoding="utf-8-sig")
+        data = json.loads(text)
+    except Exception as exc:
+        return JSONResponse(
+            {
+                "error": f"Failed to parse {latest.name} as JSON",
+                "detail": str(exc),
+            },
+            status_code=500,
+        )
+
+    data.setdefault("dashboard_loaded_at", dt.datetime.now().isoformat())
+    return JSONResponse(data)
+
+
+@app.get("/api/latest")
+def api_latest(full: int = 0):
+    # Latest RFCC DailyCheck snapshot (BOM-safe)
+    p = Path(r"D:\RETROFUSE_OPS\Status\RFCC")
+    files = sorted(p.glob("DailyCheck_*.json"), key=lambda x: x.stat().st_mtime, reverse=True)
+    if not files:
+        return {"ok": False, "error": "No DailyCheck_*.json found", "path": str(p)}
+
+    f = files[0]
+    try:
+        data = json.loads(f.read_text(encoding="utf-8-sig"))
+    except Exception as e:
+        return {"ok": False, "error": str(e), "file": f.name}
+
+    if full:
+        return {"ok": True, "file": f.name, "data": data}
+
+    g  = data.get("gpu_pipeline", {}) or {}
+    r  = data.get("renderers", {}) or {}
+    rc1 = data.get("rc1", {}) or {}
+    rc3 = data.get("rc3", {}) or {}
+    sp = data.get("safepoints", []) or []
+
+    return {
+        "ok": True,
+        "file": f.name,
+        "timestamp": data.get("timestamp"),
+        "rc1": {"status": rc1.get("status"), "process_id": rc1.get("process_id")},
+        "rc3": {"status": rc3.get("status"), "process_id": rc3.get("process_id")},
+        "renderers": r,
+        "gpu_process_count": g.get("gpu_process_count"),
+        "latest_safepoint": (sp[0].get("latest_zip") if sp else None),
+    }
+
+

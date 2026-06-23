@@ -1,0 +1,29 @@
+{
+  "receipt_id": "DASHBOARD_V19_CONSOLIDATION_RECEIPT",
+  "timestamp_utc": "2026-06-04T16:55:00Z",
+  "version": "1.9",
+  "intent": "Consolidate dashboard frontend to single template (templates/index.html), de-authorize embedded server.py INDEX_HTML, and implement Symphony Workroom Floor.",
+  "authoritative_files": [
+    {
+      "path": "D:\\RETROFUSE_OPS\\Dashboard\\server.py",
+      "hash": "5A28FF91AC91C6A269ECD41A6EFADB49B2D7E754C2DB0CBC8D5AAB665628C063",
+      "status": "PATCHED (Backend + API + Template Preference)"
+    },
+    {
+      "path": "D:\\RETROFUSE_OPS\\Dashboard\\templates\\index.html",
+      "hash": "0C215A683C5EF1F96BABF431A2E8F33C4F352057590F0F0FAAE33853F11830C7",
+      "status": "PATCHED (v1.9 Symphony Floor UI)"
+    }
+  ],
+  "archived_legacy_files": [
+    "dashboard_index_v2.html",
+    "dashboard_index_v3.html",
+    "dashboard_index.html",
+    "debug_index.html",
+    "debug_v5.html",
+    "static_index.html"
+  ],
+  "archive_root": "D:\\RETROFUSE_OPS\\Dashboard\\_Archive",
+  "validation_status": "PASS",
+  "operator_signature": "GEMINI_CLI_AUTO_EDIT"
+}

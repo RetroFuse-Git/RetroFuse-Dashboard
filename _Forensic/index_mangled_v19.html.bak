@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>RetroFuse OPS Dashboard - v2.0 Recovery</title>
+  <style>
+    :root {
+      --bg: #020617;
+      --border-subtle: #1f2937;
+      --accent: #38bdf8;
+      --accent-soft: rgba(56, 189, 248, 0.12);
+      --text-main: #e5e7eb;
+      --text-muted: #9ca3af;
+      --text-danger: #f97373;
+      --text-warn: #fbbf24;
+      --text-ok: #4ade80;
+      --shadow-soft: 0 18px 60px rgba(15, 23, 42, 0.7);
+      --radius-xl: 18px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text-main);
+      overflow: hidden;
+    }
+    .shell-container { display: flex; height: 100vh; }
+    .shell-sidebar {
+      width: 220px;
+      background: #020617;
+      border-right: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      padding: 24px 0;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .shell-nav-group { margin-bottom: 20px; }
+    .shell-nav-label {
+      font-size: 0.62rem;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      color: #4b5563;
+      padding: 0 24px 8px 24px;
+    }
+    .shell-nav-item {
+      padding: 10px 24px;
+      cursor: pointer;
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      transition: all 0.15s ease;
+      border-left: 3px solid transparent;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .shell-nav-item:hover { background: rgba(56, 189, 248, 0.05); color: var(--text-main); }
+    .shell-nav-item.active {
+      background: rgba(56, 189, 248, 0.08);
+      color: var(--accent);
+      border-left-color: var(--accent);
+      font-weight: 500;
+    }
+    .surface-content { flex: 1; overflow-y: auto; display: flex; flex-direction: column; position: relative; }
+    .surface-panel { display: none; flex-direction: column; gap: 20px; padding: 24px; }
+    .surface-panel.active { display: flex; }
+
+    .header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
+    .title { font-size: 1.4rem; font-weight: 600; letter-spacing: 0.03em; }
+    .subtitle { font-size: 0.78rem; color: var(--text-muted); margin-top: 4px; }
+    
+    .meta-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 0.75rem; }
+    .meta-pill {
+      padding: 4px 10px; border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: rgba(15, 23, 42, 0.9);
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .meta-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--accent); }
+    .meta-label { text-transform: uppercase; letter-spacing: 0.16em; font-size: 0.62rem; color: #6b7280; }
+    .meta-value { color: var(--text-main); font-weight: 500; }
+    
+    .btn-refresh {
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.4);
+      background: radial-gradient(circle at top left, #0f172a 0, #020617 100%);
+      color: var(--text-main);
+      padding: 4px 12px;
+      font-size: 0.7rem;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }
+
+    /* WRC Live Banner */
+    #wrc-live-banner {
+      display: none;
+      background: #065f46;
+      color: #4ade80;
+      padding: 10px 24px;
+      font-weight: 700;
+      font-size: 0.85rem;
+      letter-spacing: 0.05em;
+      text-align: center;
+      border-bottom: 1px solid #059669;
+      position: sticky;
+      top: 0;
+      z-index: 1000;
+    }
+
+    /* Tiles */
+    .cockpit-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .cockpit-card {
+      background: rgba(15, 23, 42, 0.4);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: all 0.2s ease;
+      cursor: pointer;
+    }
+    .cockpit-card:hover { border-color: var(--accent); background: rgba(56, 189, 248, 0.03); transform: translateY(-2px); }
+    .cockpit-card-header { display: flex; justify-content: space-between; align-items: center; }
+    .cockpit-card-title { font-size: 0.65rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.1em; }
+    .cockpit-card-status { width: 6px; height: 6px; border-radius: 50%; }
+    .cockpit-card-value { font-size: 1.35rem; font-weight: 700; color: var(--text-main); }
+
+    /* Symphony Floor */
+    .symphony-floor { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 32px; min-height: 200px; }
+    @media (max-width: 1400px) { .symphony-floor { grid-template-columns: repeat(3, 1fr); } }
+    @media (max-width: 900px) { .symphony-floor { grid-template-columns: 1fr; } }
+    
+    .floor-station {
+      background: rgba(15, 23, 42, 0.2);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .station-header {
+      padding: 8px 12px;
+      background: rgba(15, 23, 42, 0.5);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .station-title { font-size: 0.6rem; font-weight: 700; text-transform: uppercase; color: #94a3b8; }
+    .station-count { font-size: 0.65rem; font-weight: 600; color: var(--accent); }
+    .station-body { padding: 6px; display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 60px; }
+
+    .job-card {
+      background: rgba(2, 6, 23, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 6px;
+      padding: 6px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-size: 0.7rem;
+    }
+    .job-card-id { font-weight: 700; font-family: ui-monospace, monospace; }
+    .job-card-meta { display: flex; justify-content: space-between; align-items: center; color: #64748b; font-size: 0.55rem; }
+    .job-card.blocked { border-left: 2px solid var(--text-danger); }
+    .job-card.signoff { border-left: 2px solid var(--text-warn); }
+    .job-card.complete { border-left: 2px solid var(--text-ok); opacity: 0.8; }
+
+    /* Classic Cards */
+    .card {
+      background: rgba(15, 23, 42, 0.3);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-xl);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .card-header { display: flex; justify-content: space-between; align-items: center; }
+    .card-title { font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); }
+    .card-tag { font-size: 0.55rem; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(148, 163, 184, 0.2); }
+    
+    .card-body { font-size: 0.78rem; display: flex; flex-direction: column; gap: 8px; }
+    .card-row { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+    .label { font-size: 0.7rem; color: #6b7280; }
+    .value { font-size: 0.78rem; font-variant-numeric: tabular-nums; }
+    .value-ok { color: var(--text-ok); }
+    .value-warn { color: var(--text-warn); }
+    .value-bad { color: var(--text-danger); }
+    
+    .list { display: flex; flex-direction: column; gap: 4px; max-height: 500px; overflow-y: auto; }
+    .list-item { padding: 8px; border-radius: 8px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); }
+    .mono { font-family: ui-monospace, monospace; font-size: 0.7rem; }
+    .small { font-size: 0.65rem; }
+    .truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .pulse { animation: pulse-animation 2s infinite; }
+    @keyframes pulse-animation {
+      0% { box-shadow: 0 0 0 0px rgba(56, 189, 248, 0.4); }
+      100% { box-shadow: 0 0 0 6px rgba(56, 189, 248, 0); }
+    }
+
+    details { background: rgba(0,0,0,0.2); border-radius: 8px; padding: 6px 10px; border: 1px solid rgba(255,255,255,0.05); margin-bottom: 4px; }
+    summary { cursor: pointer; font-size: 0.75rem; color: var(--text-muted); list-style: none; display: flex; justify-content: space-between; font-weight: 500; }
+    .details-content { margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 10px; }
+
+    .content-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
+  </style>
+</head>
+<body>
+  <div class="shell-container">
+    <aside class="shell-sidebar">
+      <div class="shell-nav-group">
+        <div class="shell-nav-label">OPERATIONS</div>
+        <div class="shell-nav-item active" data-surface-nav="overview" onclick="showSurface('overview')">
+          <span>Overview</span>
+        </div>
+        <div class="shell-nav-item" data-surface-nav="workers" onclick="showSurface('workers')">
+          <span>Workers</span>
+        </div>
+        <div class="shell-nav-item" data-surface-nav="bolt" onclick="showSurface('bolt')">
+          <span>Bolt RC2</span>
+        </div>
+        <div class="shell-nav-item" data-surface-nav="safepoint" onclick="showSurface('safepoint')">
+          <span>SAFEPOINT</span>
+        </div>
+      </div>
+      <div class="shell-nav-group">
+        <div class="shell-nav-label">PROJECTS & DATA</div>
+        <div class="shell-nav-item" data-surface-nav="projects" onclick="showSurface('projects')">
+          <span>Active Projects</span>
+        </div>
+        <div class="shell-nav-item" data-surface-nav="evidence" onclick="showSurface('evidence')">
+          <span>Evidence / Ledger</span>
+        </div>
+        <div class="shell-nav-item" data-surface-nav="diagnostics" onclick="showSurface('diagnostics')">
+          <span>Diagnostics</span>
+        </div>
+      </div>
+      <div style="margin-top:auto; padding:0 24px;">
+        <div class="small" style="color:#334155;">GEN 7 RECOVERY v2.0</div>
+      </div>
+    </aside>
+
+    <div class="surface-content">
+      <div id="wrc-live-banner">
+        WRC LIVE WINDOW ACTIVE — SESSION <span id="wrc-banner-session">--</span> — <span id="wrc-banner-checkpoint">--</span>
+      </div>
+
+      <!-- OVERVIEW SURFACE (OPERATIONAL COCKPIT) -->
+      <div class="surface-panel active" data-surface-panel="overview">
+        <header class="header">
+          <div>
+            <div class="title">Operations Overview</div>
+            <div class="subtitle">Gen 7 Gen 7 Operational Cockpit - Central status and autonomous flow.</div>
+          </div>
+          <div class="meta-bar">
+            <div class="meta-pill">
+              <span class="meta-dot pulse"></span>
+              <span class="meta-label">System Trust</span>
+              <span id="trust-indicator" class="meta-value">AWAITING DATA</span>
+            </div>
+            <div class="meta-pill">
+              <span class="meta-label">Refresh</span>
+              <span id="last-refresh-time" class="meta-value mono">--:--:--</span>
+            </div>
+            <button class="btn-refresh" onclick="refreshAll()">Force Reload</button>
+          </div>
+        </header>
+
+        <div class="cockpit-tiles">
+          <div class="cockpit-card" onclick="showSurface('bolt')">
+            <div class="cockpit-card-header"><span class="cockpit-card-title">Bolt Controller</span><span id="stat-bolt" class="cockpit-card-status"></span></div>
+            <div id="val-bolt" class="cockpit-card-value">--</div>
+          </div>
+          <div class="cockpit-card" onclick="showSurface('safepoint')">
+            <div class="cockpit-card-header"><span class="cockpit-card-title">SAFEPOINT Level</span><span id="stat-safepoint" class="cockpit-card-status"></span></div>
+            <div id="val-safepoint" class="cockpit-card-value">--</div>
+          </div>
+          <div class="cockpit-card" onclick="showSurface('projects')">
+            <div class="cockpit-card-header"><span class="cockpit-card-title">WRC Observer</span><span id="stat-smc-wrc" class="cockpit-card-status"></span></div>
+            <div id="val-smc-wrc" class="cockpit-card-value">--</div>
+          </div>
+          <div class="cockpit-card" onclick="showSurface('workers')">
+            <div class="cockpit-card-header"><span class="cockpit-card-title">Active Agents</span><span id="stat-workers" class="cockpit-card-status"></span></div>
+            <div id="val-workers" class="cockpit-card-value">0</div>
+          </div>
+        </div>
+
+        <div class="content-grid">
+          <!-- 1. ACTION QUEUE -->
+          <section class="card" style="grid-column: 1 / -1;">
+            <div class="card-header"><span class="card-title">Action Queue</span><span class="card-tag">Priority</span></div>
+            <div id="action-queue-list" class="card-body"><div class="small">Calculating priority tasks...</div></div>
+          </section>
+
+          <!-- 2. SYSTEM / TRUST SUMMARY -->
+          <section class="card">
+            <div class="card-header"><span class="card-title">System Trust & RFCC</span><span class="card-tag">SNAPSHOT</span></div>
+            <div id="snapshot-summary" class="card-body"></div>
+          </section>
+
+          <!-- 3. COO / ORCHESTRATOR -->
+          <section class="card">
+            <div class="card-header"><span class="card-title">COO Orchestrator</span><span class="card-tag">CONTROL PLANE</span></div>
+            <div id="orchestrator-summary" class="card-body"></div>
+          </section>
+
+          <!-- 4. WORKER SUMMARY -->
+          <section class="card">
+            <div class="card-header"><span class="card-title">Worker Summary</span><span class="card-tag" onclick="showSurface('workers')" style="cursor:pointer;">VIEW MONITOR</span></div>
+            <div id="workers-summary" class="card-body"></div>
+          </section>
+
+          <!-- 5. BOLT SUMMARY -->
+          <section class="card">
+            <div class="card-header"><span class="card-title">Bolt RC2 Status</span><span class="card-tag" onclick="showSurface('bolt')" style="cursor:pointer;">VIEW CONTROLLER</span></div>
+            <div id="bolt-summary" class="card-body"></div>
+          </section>
+
+          <!-- 6. SAFEPOINT SUMMARY -->
+          <section class="card">
+            <div class="card-header"><span class="card-title">SAFEPOINT Proof</span><span class="card-tag" onclick="showSurface('safepoint')" style="cursor:pointer;">VIEW ENGINE</span></div>
+            <div id="safepoint-summary" class="card-body"></div>
+          </section>
+
+          <!-- 7. WRC LIVE STATUS -->
+          <section class="card">
+            <div class="card-header"><span class="card-title">WRC Live Window</span><span class="card-tag" onclick="showSurface('projects')" style="cursor:pointer;">VIEW PROJECT</span></div>
+            <div id="wrc-summary" class="card-body"></div>
+          </section>
+
+          <!-- 8. DAILY BUNDLE -->
+          <section class="card">
+            <div class="card-header"><span class="card-title">Daily Bundle</span><span class="card-tag">BUILD v0.9</span></div>
+            <div id="dailybundle-summary" class="card-body"></div>
+          </section>
+
+          <!-- 9. EVIDENCE / LEDGER -->
+          <section class="card">
+            <div class="card-header"><span class="card-title">Evidence & Registry</span><span class="card-tag" onclick="showSurface('evidence')" style="cursor:pointer;">VIEW LEDGER</span></div>
+            <div id="evidence-summary" class="card-body">
+              <div class="card-row"><span>Planes Registry</span><span class="value-ok">ACTIVE</span></div>
+              <div class="card-row"><span>Audit Trail</span><span class="value-ok">VERIFIED</span></div>
+            </div>
+          </section>
+        </div>
+
+        <!-- Symphony Floor Relegated to Secondary Overview Block -->
+        <details style="margin-top: 24px;">
+          <summary><span>SYMPHONY WORKROOM FLOOR (EXPERIMENTAL)</span><span>TASK FLOW VIEW</span></summary>
+          <div class="details-content">
+            <div class="symphony-floor">
+              <div class="floor-station">
+                <div class="station-header"><span class="station-title">Intake</span><span id="count-intake" class="station-count">0</span></div>
+                <div id="floor-intake" class="station-body"></div>
+              </div>
+              <div class="floor-station">
+                <div class="station-header"><span class="station-title">Worker Bays</span><span id="count-workers" class="station-count">0</span></div>
+                <div id="floor-workers" class="station-body"></div>
+              </div>
+              <div class="floor-station">
+                <div class="station-header"><span class="station-title">Stoppages</span><span id="count-stoppages" class="station-count">0</span></div>
+                <div id="floor-stoppages" class="station-body"></div>
+              </div>
+              <div class="floor-station">
+                <div class="station-header"><span class="station-title">Signoff</span><span id="count-signoff" class="station-count">0</span></div>
+                <div id="floor-signoff" class="station-body"></div>
+              </div>
+              <div class="floor-station">
+                <div class="station-header"><span class="station-title">Closeout</span><span id="count-closeout" class="station-count">0</span></div>
+                <div id="floor-closeout" class="station-body"></div>
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <!-- WORKERS SURFACE -->
+      <div class="surface-panel" data-surface-panel="workers">
+        <header class="header"><div><div class="title">Worker Monitor</div><div class="subtitle">Agent health and live event stream.</div></div></header>
+        <div class="content-grid">
+          <section class="card" style="grid-column: 1 / -1;">
+            <div class="card-header"><div class="card-title">Live Agents</div></div>
+            <div id="workers-detail" class="card-body"></div>
+          </section>
+          <section class="card" style="grid-column: 1 / -1;">
+            <div class="card-header"><div class="card-title">Worker Event History</div></div>
+            <div id="worker-events-detail" class="card-body"></div>
+          </section>
+        </div>
+      </div>
+
+      <!-- BOLT SURFACE -->
+      <div class="surface-panel" data-surface-panel="bolt">
+        <header class="header"><div><div class="title">Bolt RC2 Controller</div><div class="subtitle">Adjudication and Command Log.</div></div></header>
+        <div id="bolt-detail" class="card"></div>
+      </div>
+
+      <!-- SAFEPOINT SURFACE -->
+      <div class="surface-panel" data-surface-panel="safepoint">
+        <header class="header"><div><div class="title">SAFEPOINT Engine</div><div class="subtitle">Archive immutability proofs.</div></div></header>
+        <div id="safepoint-detail" class="card"></div>
+      </div>
+
+      <!-- PROJECTS SURFACE -->
+      <div class="surface-panel" data-surface-panel="projects">
+        <header class="header"><div><div class="title">Active Projects</div><div class="subtitle">WRC Window and Daily Bundle.</div></div></header>
+        <div class="content-grid">
+           <section class="card">
+             <div class="card-header"><div class="card-title">SMC / WRC Observer</div></div>
+             <div id="wrc-detail" class="card-body"></div>
+           </section>
+           <section class="card">
+             <div class="card-header"><div class="card-title">Daily Bundle Surface</div></div>
+             <div id="dailybundle-detail" class="card-body"></div>
+           </section>
+           <section class="card" style="grid-column: 1 / -1;">
+             <div class="card-header"><div class="card-title">Symphony Project Board</div></div>
+             <div id="project-board-detail" class="card-body"></div>
+           </section>
+        </div>
+      </div>
+
+      <!-- EVIDENCE SURFACE -->
+      <div class="surface-panel" data-surface-panel="evidence">
+        <header class="header"><div><div class="title">Evidence / Ledger</div><div class="subtitle">Planes and audit records.</div></div></header>
+        <div id="planes-registry-detail" class="card"></div>
+      </div>
+
+      <!-- DIAGNOSTICS SURFACE -->
+      <div class="surface-panel" data-surface-panel="diagnostics">
+        <header class="header"><div><div class="title">Diagnostics</div><div class="subtitle">Deep telemetry and raw captures.</div></div></header>
+        <div class="content-grid">
+           <section class="card">
+             <div class="card-header"><div class="card-title">Browser Telemetry</div></div>
+             <div id="telemetry-detail" class="card-body"></div>
+           </section>
+           <section class="card">
+             <div class="card-header"><div class="card-title">Disk Storage</div></div>
+             <div id="disks-detail" class="card-body"></div>
+           </section>
+           <section class="card">
+             <div class="card-header"><div class="card-title">Alpha Wakeflow</div></div>
+             <div id="alpha-detail" class="card-body"></div>
+           </section>
+           <section class="card">
+             <div class="card-header"><div class="card-title">OPS Notes</div></div>
+             <div id="notes-detail" class="card-body"></div>
+           </section>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.__ops_data = { snapshot:null, bolt:null, workers:[], projectBoard:[], wrc:null, events:null, orchestrator:null, dailybundle:null };
+
+    function escapeHtml(s) {
+      if (!s) return "";
+      return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    function safeGet(obj, path, fb = null) {
+      try { return path.split('.').reduce((o, k) => (o && k in o ? o[k] : undefined), obj) ?? fb; }
+      catch(e) { return fb; }
+    }
+    
+    function fmtBytes(n) {
+      if (typeof n !== "number" || isNaN(n)) return "n/a";
+      const units = ["B","KB","MB","GB","TB","PB"];
+      let u = 0, v = n;
+      while (v >= 1024 && u < units.length - 1) { v /= 1024; u++; }
+      return v.toFixed(1) + " " + units[u];
+    }
+
+    function showSurface(name) {
+      document.querySelectorAll("[data-surface-nav]").forEach(el => el.classList.toggle("active", el.getAttribute("data-surface-nav") === name));
+      document.querySelectorAll("[data-surface-panel]").forEach(el => el.classList.toggle("active", el.getAttribute("data-surface-panel") === name));
+    }
+
+    async function refreshAll() {
+      await Promise.all([loadSnapshot(), loadBolt(), loadWorkers(), loadProjectBoard(), loadWrc(), loadEvents(), loadOrchestrator(), loadDailyBundle()]);
+      updateCockpit();
+    }
+
+    function updateCockpit() {
+      const d = window.__ops_data;
+      document.getElementById("last-refresh-time").textContent = new Date().toLocaleTimeString();
+
+      // System Health Tile
+      if (d.snapshot) {
+        const signals = d.snapshot.ops_signals || {};
+        const allOk = Object.values(signals).every(v => ["success","clean","ok","true","pass","passed"].includes(String(v).toLowerCase()));
+        const trustEl = document.getElementById("trust-indicator");
+        if (trustEl) {
+          trustEl.textContent = allOk ? "VERIFIED" : "DEGRADED";
+          trustEl.className = "meta-value " + (allOk ? "value-ok" : "value-bad");
+        }
+        
+        const rc1 = safeGet(d.snapshot, "rc1.status", "off");
+        const rc2 = safeGet(d.snapshot, "rc2.status", "off");
+        const ok = (rc1 === "running" || rc2 === "running");
+        document.getElementById("val-system").textContent = ok ? "ACTIVE" : "OFFLINE";
+        document.getElementById("stat-system").className = "cockpit-card-status " + (ok ? "value-ok" : "value-bad");
+      }
+
+      // Bolt Tile
+      if (d.bolt) {
+        const boot = d.bolt.boot_status || "OFF";
+        const ok = (boot === "READY" || boot === "STRICT_CLEAN");
+        document.getElementById("val-bolt").textContent = boot;
+        document.getElementById("stat-bolt").className = "cockpit-card-status " + (ok ? "value-ok" : "value-bad");
+      }
+
+      // SAFEPOINT Tile
+      if (d.bolt) {
+        const sp = safeGet(d.bolt, "adjudication.safepoint", {});
+        document.getElementById("val-safepoint").textContent = sp.level || "NONE";
+        document.getElementById("stat-safepoint").className = "cockpit-card-status " + (sp.proof_fresh ? "value-ok" : "value-bad");
+      }
+
+      // WRC Tile & Banner
+      let wrcRunning = false;
+      if (d.wrc) {
+        wrcRunning = d.wrc.observer_running;
+        const color = d.wrc.status_color;
+        document.getElementById("val-smc-wrc").textContent = wrcRunning ? "LIVE" : (d.wrc.active_window ? "STALLED" : "IDLE");
+        document.getElementById("stat-smc-wrc").className = "cockpit-card-status " + (color === "GREEN" ? "value-ok" : (color === "RED" ? "value-bad" : "value-warn"));
+        
+        const banner = document.getElementById("wrc-live-banner");
+        if (banner) {
+          if (d.wrc.active_window && wrcRunning) {
+            document.getElementById("wrc-banner-session").textContent = d.wrc.session_id;
+            document.getElementById("wrc-banner-checkpoint").textContent = d.wrc.latest_checkpoint;
+            banner.style.display = "block";
+          } else { banner.style.display = "none"; }
+        }
+      }
+
+      // Workers Tile
+      const workerList = d.workers || [];
+      let activeCount = workerList.filter(w => w.alive).length;
+      if (wrcRunning) activeCount += 1;
+      
+      const blocked = workerList.some(w => w.state === "BLOCKED");
+      document.getElementById("val-workers").textContent = activeCount;
+      document.getElementById("stat-workers").className = "cockpit-card-status " + (blocked ? "value-bad" : "value-ok");
+
+      // Action Queue
+      const actions = [];
+      workerList.forEach(w => { if(w.state === "BLOCKED") actions.push({t:"WORKER", id:w.worker, m:w.recommended_action, c:"value-bad"}); });
+      if (d.projectBoard) {
+        d.projectBoard.forEach(t => { if(t.state === "TASK_BLOCKED") actions.push({t:"TASK", id:t.task_id, m:t.next_required_action, c:"value-bad"}); });
+      }
+      if (d.wrc && d.wrc.status_color === "RED") actions.push({t:"WRC", id:"OBSERVER", m:d.wrc.next_safe_action, c:"value-bad"});
+      
+      const aq = document.getElementById("action-queue-list");
+      if (aq) {
+        aq.innerHTML = actions.length ? `<div class="list">${actions.map(a => `<div class="list-item"><div class="card-row"><strong>${a.t}: ${a.id}</strong><span class="${a.c}">${a.m}</span></div></div>`).join("")}</div>` : '<div class="small value-ok">No blockers.</div>';
+      }
+
+      renderSymphonyFloorSummary();
+    }
+
+    function renderSymphonyFloorSummary() {
+      const d = window.__ops_data;
+      const intake = [], workers = [], stoppages = [], signoff = [], closeout = [];
+      const now = new Date(), freshnessMs = 24 * 60 * 60 * 1000;
+
+      if (d.wrc && d.wrc.observer_running) {
+        workers.push({ id: "WRC_OBS", title: `Session ${d.wrc.session_id}`, role: "observer", state: "RUNNING" });
+      }
+
+      if (d.workers) {
+        d.workers.forEach(w => {
+          const card = { id: w.worker, title: w.task_id || "IDLE", role: w.role, state: w.state };
+          if (w.state === "BLOCKED" || w.state === "WAITING_FOR_OPERATOR") stoppages.push(card);
+          else if (w.alive && (w.state === "WORKING" || w.state === "ACTIVE")) workers.push(card);
+        });
+      }
+
+      if (d.projectBoard) {
+        d.projectBoard.forEach(t => {
+          const isFresh = (now - new Date(t.last_update)) < freshnessMs;
+          const card = { id: t.task_id, title: t.title, role: t.assigned_worker || "task", state: t.state };
+          if (["PENDING", "READY_FOR_HANDOFF", "TASK_INITIALIZED"].includes(t.state)) intake.push(card);
+          else if (["TASK_BLOCKED", "FAIL"].some(s => t.state.includes(s))) stoppages.push(card);
+          else if (["NEEDS_REVIEW", "AWAITING_REVIEW"].includes(t.state)) signoff.push(card);
+          else if (["TASK_COMPLETE", "DONE"].includes(t.state) && isFresh) closeout.push(card);
+        });
+      }
+
+      const renderCard = (c) => `<div class="job-card ${c.state.includes('BLOCKED')?'blocked':''}"><div class="job-card-id">${escapeHtml(c.id)}</div><div class="small truncate">${escapeHtml(c.title)}</div></div>`;
+      const setS = (id, countId, list) => {
+        document.getElementById(countId).textContent = list.length;
+        document.getElementById(id).innerHTML = list.map(renderCard).join("") || '<div class="small" style="opacity:0.2; text-align:center;">--</div>';
+      };
+
+      setS("floor-intake", "count-intake", intake);
+      setS("floor-workers", "count-workers", workers);
+      setS("floor-stoppages", "count-stoppages", stoppages);
+      setS("floor-signoff", "count-signoff", signoff);
+      setS("floor-closeout", "count-closeout", closeout);
+    }
+
+    // Loaders
+    async function loadSnapshot() { try { const r = await fetch("/api/latest?n="+Date.now()); const d = await r.json(); window.__ops_data.snapshot = d; renderSnapshotDetail(d); } catch(e){} }
+    async function loadBolt() { try { const r = await fetch("/api/bolt?n="+Date.now()); const d = await r.json(); window.__ops_data.bolt = d; renderBoltDetail(d); } catch(e){} }
+    async function loadWorkers() { try { const r = await fetch("/api/workers/status?n="+Date.now()); const d = await r.json(); window.__ops_data.workers = d; renderWorkersDetail(d); } catch(e){} }
+    async function loadProjectBoard() { try { const r = await fetch("/api/project-board?n="+Date.now()); const d = await r.json(); window.__ops_data.projectBoard = d; renderProjectBoardDetail(d); } catch(e){} }
+    async function loadWrc() { try { const r = await fetch("/api/smc/wrc-live-status?n="+Date.now()); const d = await r.json(); window.__ops_data.wrc = d; renderWrcDetail(d); } catch(e){} }
+    async function loadEvents() { try { const r = await fetch("/api/worker-events/summary?n="+Date.now()); const d = await r.json(); window.__ops_data.events = d; renderEventsDetail(d); } catch(e){} }
+    async function loadOrchestrator() { try { const r = await fetch("/api/orchestrator?n="+Date.now()); const d = await r.json(); window.__ops_data.orchestrator = d; renderOrchestratorDetail(d); } catch(e){} }
+    async function loadDailyBundle() { try { const r = await fetch("/api/apps/dailybundle?n="+Date.now()); const d = await r.json(); window.__ops_data.dailybundle = d; renderDailyBundleDetail(d); } catch(e){} }
+
+    function renderSnapshotDetail(s) {
+      const sum = document.getElementById("snapshot-summary");
+      if (sum) sum.innerHTML = `<div class="card-row"><span>Snapshot Time</span><span class="mono">${s.timestamp}</span></div><div class="card-row"><span>Source</span><span class="mono small truncate">${escapeHtml(s.snapshot_source)}</span></div>`;
+      const tel = document.getElementById("telemetry-detail");
+      if (tel) {
+        const getT = (id) => `<div class="list-item"><div class="card-row"><strong>${id.toUpperCase()}</strong><span class="${s[id].status==='running'?'value-ok':''}">${s[id].status}</span></div><div class="small mono">PID: ${s[id].process_id || 'none'}</div></div>`;
+        tel.innerHTML = `<div class="list">${getT('rc1')}${getT('rc2')}${getT('rc3')}</div>`;
+      }
+      const dsk = document.getElementById("disks-detail");
+      if (dsk) dsk.innerHTML = `<div class="list">${s.disks.map(d => `<div class="list-item"><div class="card-row"><strong>Drive ${d.name}</strong><span>${fmtBytes(d.used_bytes)} / ${fmtBytes(d.total_bytes)}</span></div></div>`).join("")}</div>`;
+      const alp = document.getElementById("alpha-detail");
+      if (alp) alp.innerHTML = `<div class="card-row"><span>Folder Exists</span><span>${s.alpha.exists?'YES':'NO'}</span></div><div class="card-row"><span>Files last 24h</span><span>${s.alpha.files_24h}</span></div>`;
+      const nts = document.getElementById("notes-detail");
+      if (nts) nts.innerHTML = `<div class="list">${(s.notes||[]).map(n => `<div class="list-item small">- ${escapeHtml(n)}</div>`).join("") || 'No notes.'}</div>`;
+    }
+
+    function renderBoltDetail(b) {
+      const el = document.getElementById("bolt-detail");
+      const adj = b.adjudication || {};
+      
+      // Update Summary (Home)
+      const sum = document.getElementById("bolt-summary");
+      if (sum) sum.innerHTML = `<div class="card-row"><span>Status</span><span class="value-ok">${b.boot_status}</span></div><div class="card-row"><span>Adj Mode</span><span class="${adj.status==='DEGRADED'?'value-bad':'value-ok'}">${adj.status}</span></div><div class="card-row"><span>Controller</span><span>${b.controller_status}</span></div>`;
+
+      if (el) {
+        el.innerHTML = `<div class="card-body"><div style="display:grid; grid-template-columns:1fr 1fr; gap:20px;"><div><div class="label">Control Plane</div><div class="card-row"><span>Boot Status</span><span class="value-ok">${b.boot_status}</span></div><div class="card-row"><span>Controller</span><span>${b.controller_status}</span></div></div><div><div class="label">Adjudication</div><div class="card-row"><span>Mode</span><span class="${adj.status==='DEGRADED'?'value-bad':'value-ok'}">${adj.status}</span></div><div class="card-row"><span>Headline</span><span class="small">${escapeHtml(adj.headline || 'System Clean')}</span></div></div></div><details style="margin-top:20px;"><summary><span>COMMAND LOG</span><span>${b.cmdlog ? b.cmdlog.length : 0} ENTRIES</span></summary><div class="details-content"><div class="list" style="max-height:300px;">${(b.cmdlog||[]).map(l => `<div class="list-item mono small"><span style="opacity:0.6;">${l.ts}</span> <strong>${l.cmd}</strong>: ${l.status}</div>`).join("")}</div></div></details></div>`;
+      }
+      
+      const sp = adj.safepoint || {};
+      // Update SAFEPOINT Summary (Home)
+      const spSum = document.getElementById("safepoint-summary");
+      if (spSum) spSum.innerHTML = `<div class="card-row"><span>Level</span><span class="value-ok">${sp.level || 'UNPROVEN'}</span></div><div class="card-row"><span>Proof</span><span class="${sp.proof_fresh?'value-ok':'value-bad'}">${sp.proof_fresh?'FRESH':'STALE'}</span></div><div class="card-row"><span>Lineage</span><span class="${sp.lineage_clear?'value-ok':'value-bad'}">${sp.lineage_clear?'MATCHED':'DRIFTED'}</span></div>`;
+
+      const spEl = document.getElementById("safepoint-detail");
+      if (spEl) spEl.innerHTML = `<div class="card-body"><div class="card-row"><span>Level</span><span class="value-ok">${sp.level || 'UNPROVEN'}</span></div><div class="card-row"><span>Proof Freshness</span><span class="${sp.proof_fresh?'value-ok':'value-bad'}">${sp.proof_fresh?'FRESH':'STALE'}</span></div><div class="card-row"><span>Lineage</span><span class="${sp.lineage_clear?'value-ok':'value-bad'}">${sp.lineage_clear?'MATCHED':'DRIFTED'}</span></div><div class="small mono truncate" style="margin-top:10px; background:rgba(0,0,0,0.2); padding:8px;">SHA: ${sp.validated_zip_sha256 || 'none'}</div></div>`;
+    }
+
+    function renderWorkersDetail(ws) {
+      // Update Summary (Home)
+      const sum = document.getElementById("workers-summary");
+      if (sum) {
+        const active = ws.filter(w => w.alive).length;
+        sum.innerHTML = `<div class="card-row"><span>Active Agents</span><span class="value-ok">${active}</span></div><div class="card-row"><span>Registered</span><span>${ws.length}</span></div>`;
+      }
+
+      const el = document.getElementById("workers-detail");
+      if (el) el.innerHTML = `<div class="list">${ws.map(w => `<div class="list-item"><div class="card-row"><strong>${w.worker}</strong><span class="${w.alive?'value-ok':'value-bad'}">${w.state}</span></div><div class="small">${w.task_id || 'IDLE'} | ${w.role} | Seen: ${w.age_seconds}s ago</div></div>`).join("")}</div>`;
+    }
+
+    function renderEventsDetail(d) {
+      const el = document.getElementById("worker-events-detail");
+      if (!el) return;
+      const all = [...(d.latest.inbox||[]), ...(d.latest.processed||[])].sort((a,b)=>new Date(b.event_utc)-new Date(a.event_utc));
+      el.innerHTML = `<div class="list">${all.map(e => `<div class="list-item"><div class="card-row"><strong>${e.event_type}</strong><span class="mono small">${e.event_utc}</span></div><div class="small">${e.summary || e.filename}</div></div>`).join("")}</div>`;
+    }
+
+    function renderWrcDetail(d) {
+      // Update Summary (Home)
+      const sum = document.getElementById("wrc-summary");
+      if (sum) {
+        sum.innerHTML = `<div class="card-row"><span>Active Window</span><span class="${d.active_window?'value-ok':'value-warn'}">${d.active_window?'YES':'NO'}</span></div><div class="card-row"><span>Observer</span><span class="${d.observer_running?'value-ok':'value-bad'}">${d.observer_running?'RUNNING':'OFF'}</span></div><div class="card-row"><span>Checkpoint</span><span class="mono small">${d.latest_checkpoint}</span></div>`;
+      }
+
+      const el = document.getElementById("wrc-detail");
+      if (el) el.innerHTML = `<div class="card-row"><span>Active Window</span><span class="${d.active_window?'value-ok':'value-warn'}">${d.active_window?'YES':'NO'}</span></div><div class="card-row"><span>Observer</span><span class="${d.observer_running?'value-ok':'value-bad'}">${d.observer_running?'RUNNING':'STOPPED'}</span></div><div class="card-row"><span>Checkpoint Age</span><span class="mono">${d.checkpoint_age}s</span></div><div class="card-row" style="margin-top:10px; border-top:1px solid rgba(255,255,255,0.05); padding-top:10px;"><strong>Next Safe Action:</strong> <span class="mono small">${d.next_safe_action}</span></div>`;
+    }
+
+    function renderOrchestratorDetail(d) {
+      const sum = document.getElementById("orchestrator-summary");
+      if (sum) sum.innerHTML = `<div class="card-row"><span>Status</span><span class="${d.status==='ok'?'value-ok':''}">${d.status}</span></div><div class="card-row"><span>Step Count</span><span class="mono">${d.step_count}</span></div><div class="card-row"><span>Gate Mode</span><span>${d.strict_cr_quality_gate?'STRICT':'OFF'}</span></div>`;
+    }
+
+    function renderDailyBundleDetail(d) {
+      const sum = document.getElementById("dailybundle-summary");
+      if (sum) sum.innerHTML = `<div class="card-row"><span>Build Status</span><span class="${d.status==='ok'?'value-ok':''}">${d.status}</span></div><div class="card-row"><span>Topology</span><span>v0.9 PACKAGE</span></div>`;
+
+      const el = document.getElementById("dailybundle-detail");
+      if (el) el.innerHTML = `<div class="card-row"><span>Build Status</span><span class="${d.status==='ok'?'value-ok':''}">${d.status}</span></div><div class="card-row"><span>Topology</span><span>v0.9 PACKAGE</span></div>`;
+    }
+
+    function renderProjectBoardDetail(ts) {
+      const el = document.getElementById("project-board-detail");
+      if (el) el.innerHTML = `<div class="list">${ts.map(t => `<div class="list-item"><div class="card-row"><strong>${t.task_id}</strong><span class="mono">${t.state}</span></div><div class="small">${t.title}</div></div>`).join("")}</div>`;
+    }
+
+    document.getElementById("planes-registry-detail").innerHTML = `<div class="card-body"><div class="small">Planes Registry Surface (Phase 4) is currently in READ-ONLY mode.</div></div>`;
+
+    refreshAll();
+    setInterval(refreshAll, 10000);
+  </script>
+</body>
+</html>

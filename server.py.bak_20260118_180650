@@ -1,0 +1,322 @@
+from __future__ import annotations
+
+import json
+import os
+import time
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+
+OPS_ROOT = Path(r"D:\RETROFUSE_OPS")
+DASH_INPUT_JSON = Path(r"D:\RETROFUSE_OPS\Status\RFCC\OPS_Intake_Consolidated.json")
+OPS_SIGNALS_PATH = Path(r"D:\RETROFUSE_OPS\Status\RFCC\OPS_Signals.json")
+
+STALE_MINUTES_DEFAULT = 10.0
+
+# RETROFUSE_OPS_SIGNALS_HELPER_V1
+def _read_ops_signals():
+    try:
+        from pathlib import Path
+        import json
+        p = Path(r"D:\RETROFUSE_OPS\Status\RFCC\OPS_Signals.json")
+        if not p.exists():
+            return {"_ok": False, "_missing": str(p)}
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"_ok": False, "_error": str(e)}
+# /RETROFUSE_OPS_SIGNALS_HELPER_V1
+
+def _age_minutes(p: Path) -> float | None:
+    try:
+        if not p.exists():
+            return None
+        return (time.time() - os.path.getmtime(str(p))) / 60.0
+    except Exception:
+        return None
+
+def _read_json(path: Path):
+    try:
+        if not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception as e:
+        return {"_error": str(e)}
+
+def _read_ops_signals():
+    obj = _read_json(OPS_SIGNALS_PATH)
+    return obj
+
+def dashboard_load_authoritative(stale_minutes: float = STALE_MINUTES_DEFAULT):
+    age = _age_minutes(DASH_INPUT_JSON)
+    if age is None:
+        return {
+            "ok": False,
+            "status": "MISSING",
+            "source": str(DASH_INPUT_JSON),
+            "age_minutes": None,
+            "message": "Dashboard input JSON not found."
+        }
+
+    data = _read_json(DASH_INPUT_JSON)
+    if data is None:
+        return {
+            "ok": False,
+            "status": "MISSING",
+            "source": str(DASH_INPUT_JSON),
+            "age_minutes": age,
+            "message": "Dashboard input JSON missing."
+        }
+
+    if isinstance(data, dict) and age is not None and age > stale_minutes:
+        data["_stale"] = True
+
+    # Attach ops_signals always (even if missing -> None or {"_error":...})
+    if isinstance(data, dict):
+        try:
+            data["ops_signals"] = _read_ops_signals()
+            data["_ops_signals_meta"] = {
+                "path": str(OPS_SIGNALS_PATH),
+                "age_minutes": _age_minutes(OPS_SIGNALS_PATH)
+            }
+        except Exception as e:
+            data["ops_signals"] = {"_error": str(e)}
+            data["_ops_signals_meta"] = {"path": str(OPS_SIGNALS_PATH), "age_minutes": None}
+
+        data["_dashboard_meta"] = {
+            "ok": True,
+            "source": str(DASH_INPUT_JSON),
+            "age_minutes": age,
+            "stale_minutes": stale_minutes
+        }
+    return data
+
+app = FastAPI(title="RetroFuse OPS Dashboard", version="v1.6-rebuild")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+HTML = r"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>RetroFuse OPS Dashboard</title>
+  <style>
+    :root{
+      --bg:#0b0f19; --card:#101a2a; --muted:#93a4bf; --text:#e7eefc;
+      --ok:#34d399; --warn:#fbbf24; --bad:#fb7185; --pill:#16243a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+    body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;}
+    .shell{max-width:1180px;margin:0 auto;padding:16px 16px 40px;}
+    .hdr{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:10px 0 16px;border-bottom:1px solid rgba(255,255,255,.06);}
+    .title{font-size:20px;font-weight:700;}
+    .sub{color:var(--muted);font-size:13px;margin-top:4px;}
+    .btn{background:#0f2240;border:1px solid rgba(255,255,255,.12);color:var(--text);padding:8px 10px;border-radius:10px;cursor:pointer}
+    .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px;margin-top:14px}
+    .card{grid-column:span 12;background:var(--card);border:1px solid rgba(255,255,255,.08);border-radius:16px;overflow:hidden}
+    .ci{padding:14px}
+    .ch{display:flex;justify-content:space-between;align-items:center;gap:10px}
+    .ct{font-weight:700}
+    .tag{font-size:12px;color:var(--muted)}
+    .row{display:flex;gap:12px;flex-wrap:wrap;margin-top:10px}
+    .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;margin-top:10px}
+    .k{color:var(--muted);font-size:12px}
+    .v{font-size:13px}
+    .mono{font-family:var(--mono)}
+    .pill{display:inline-flex;align-items:center;gap:8px;background:var(--pill);border:1px solid rgba(255,255,255,.10);padding:8px 10px;border-radius:999px;font-size:12px}
+    .dot{width:8px;height:8px;border-radius:99px;background:var(--muted)}
+    .ok{background:rgba(52,211,153,.12);border-color:rgba(52,211,153,.20)}
+    .ok .dot{background:var(--ok)}
+    .warn{background:rgba(251,191,36,.12);border-color:rgba(251,191,36,.22)}
+    .warn .dot{background:var(--warn)}
+    .bad{background:rgba(251,113,133,.12);border-color:rgba(251,113,133,.22)}
+    .bad .dot{background:var(--bad)}
+    .small{font-size:12px;color:var(--muted)}
+    @media (min-width: 980px){
+      #snapshot{grid-column:span 12}
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="hdr">
+      <div>
+        <div class="title">RetroFuse OPS Dashboard <span class="small">OPS Spine  v1.6</span></div>
+        <div class="sub">RFCC health, SAFEPOINT engine, Alpha capture  rendered locally from DailyCheck snapshots.</div>
+      </div>
+      <button class="btn" onclick="loadSnapshot(true)"> Refresh snapshot</button>
+    </div>
+
+    <div class="grid">
+      <div class="card" id="snapshot">
+        <div class="ci">
+          <div class="ch">
+            <div class="ct">Snapshot & Overview</div>
+            <div class="tag" id="meta">No snapshot loaded.</div>
+          </div>
+          <div id="signals" class="row" style="margin-top:12px"></div>
+          <div id="body" class="kv" style="margin-top:12px">
+            <div class="small">Waiting for latest DailyCheck JSON</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+function safeGet(obj, path, fallback){
+  try{
+    return path.split(".").reduce((o,k)=> (o && (k in o) ? o[k] : undefined), obj) ?? fallback;
+  }catch{ return fallback; }
+}
+function statusClass(ok){
+  if(ok === true) return "ok";
+  if(ok === null || ok === undefined) return "warn";
+  return "bad";
+}
+function sigPill(label, ok, detail){
+  const cls = statusClass(ok);
+  const txt = (detail && typeof detail === "string") ? detail : "";
+  return `<span class="pill ${cls}"><span class="dot"></span><span class="mono">${label}</span><span class="small">${escapeHtml(txt)}</span></span>`;
+}
+function escapeHtml(s){
+  if(!s || typeof s !== "string") return "";
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function loadSnapshot(showSpinner){
+  const body = document.getElementById("body");
+  const meta = document.getElementById("meta");
+  const signals = document.getElementById("signals");
+
+  if(showSpinner){
+    body.innerHTML = `<div class="small">Refreshing snapshot</div>`;
+    meta.textContent = "Refreshing";
+    signals.innerHTML = "";
+  }
+
+  let snap;
+  try{
+    const u = "/api/latest?nocache=" + crypto.randomUUID();
+    const r = await fetch(u);
+    if(!r.ok) throw new Error("HTTP " + r.status);
+    snap = await r.json();
+  }catch(e){
+    body.innerHTML = `<div class="small" style="color:#fb7185">Failed to load snapshot: ${escapeHtml(e.message||"unknown")}</div>`;
+    meta.textContent = "Snapshot load failed.";
+    return;
+  }
+
+  renderSnapshot(snap);
+  renderSignals(snap);
+}
+
+function renderSignals(snap){
+  const signals = document.getElementById("signals");
+  const s = snap && snap.ops_signals ? snap.ops_signals : null;
+
+  // We treat missing ops_signals as WARN so the pills still have meaning.
+  const dcOk  = safeGet(s, "DailyCheck.status", null);
+  const cxOk  = safeGet(s, "CodexGate.status", null);
+  const mirOk = safeGet(s, "DailyCheckMirror.status", null);
+  const wpgOk = safeGet(s, "PublisherWipeGuard.status", null);
+
+  const dcD = "DailyCheck=" + (dcOk ?? "missing");
+  const cxD = "CodexGate=" + (cxOk ?? "missing");
+  const miD = "Mirror=" + (mirOk ?? "missing");
+  const wpD = "WipeGuard=" + (wpgOk ?? "missing");
+
+  // Normalize expected value strings (PASS/success/ok) => true/false
+  function norm(v){
+    if(v === true || v === false) return v;
+    if(typeof v !== "string") return null;
+    const t = v.toLowerCase();
+    if(["pass","success","ok","green","clean"].includes(t)) return true;
+    if(["fail","error","red","bad"].includes(t)) return false;
+    return null;
+  }
+
+  signals.innerHTML = [
+    sigPill("DC",  norm(dcOk),  dcD),
+    sigPill("CX",  norm(cxOk),  cxD),
+    sigPill("MIR", norm(mirOk), miD),
+    sigPill("WPG", norm(wpgOk), wpD),
+  ].join("");
+}
+
+function renderSnapshot(snap){
+  const body = document.getElementById("body");
+  const meta = document.getElementById("meta");
+
+  const ts = safeGet(snap, "timestamp", safeGet(snap, "created", "unknown"));
+  const opsRoot = safeGet(snap, "ops_root", "(not set)");
+  const okMeta = safeGet(snap, "_dashboard_meta.ok", true);
+  const ageMin = safeGet(snap, "_dashboard_meta.age_minutes", null);
+  const stale = safeGet(snap, "_stale", false);
+
+  const rc1 = safeGet(snap, "rc1.status", "unknown");
+  const rc2 = safeGet(snap, "rc2.status", "unknown");
+  const rc3 = safeGet(snap, "rc3.status", "unknown");
+
+  function cls(s){
+    if(s === "running") return "mono";
+    return "mono";
+  }
+
+  body.innerHTML = `
+    <div class="k">Timestamp</div><div class="v mono">${escapeHtml(String(ts))}</div>
+    <div class="k">OPS root</div><div class="v mono">${escapeHtml(String(opsRoot))}</div>
+    <div class="k">RC1</div><div class="v ${cls(rc1)}">${escapeHtml(String(rc1))}</div>
+    <div class="k">RC2</div><div class="v ${cls(rc2)}">${escapeHtml(String(rc2))}</div>
+    <div class="k">RC3</div><div class="v ${cls(rc3)}">${escapeHtml(String(rc3))}</div>
+  `;
+
+  let m = "Loaded.";
+  if(okMeta === false) m = "Not OK.";
+  if(stale) m = "STALE snapshot.";
+  if(ageMin !== null && ageMin !== undefined) m += " age=" + ageMin.toFixed(1) + "m";
+  meta.textContent = m;
+}
+
+loadSnapshot(false);
+</script>
+</body>
+</html>
+"""
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return HTML
+
+@app.get("/api/latest")
+def api_latest():
+    # v5: authoritative snapshot + ops_signals injection
+    try:
+        data = dashboard_load_authoritative()
+    except Exception as e:
+        data = {"ok": False, "status": "ERROR", "error": str(e)}
+    if not isinstance(data, dict):
+        data = {"ok": False, "status": "ERROR", "error": "api_latest expected dict", "type": str(type(data))}
+    # RETROFUSE_OPS_SIGNALS_INJECT_V1
+    data["ops_signals"] = _read_ops_signals()
+    # /RETROFUSE_OPS_SIGNALS_INJECT_V1
+    return data
+
+@app.get("/api/ops_signals", response_class=JSONResponse)
+def api_ops_signals():
+    return JSONResponse({
+        "ops_signals": _read_ops_signals(),
+        "meta": {
+            "path": str(OPS_SIGNALS_PATH),
+            "age_minutes": _age_minutes(OPS_SIGNALS_PATH),
+        }
+    })
+

@@ -1,0 +1,66 @@
+param(
+  [string]$DashRoot = 'D:\RETROFUSE_OPS\Dashboard',
+  [int]$Port = 8101
+)
+
+$ErrorActionPreference = 'Stop'
+$WorkDir = Join-Path $DashRoot '_Work'
+New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
+$logPath = Join-Path $WorkDir 'OpsDashboard_Watchdog.log'
+$startScript = Join-Path $DashRoot 'Start_RetroFuse_OpsDashboard_Headless.ps1'
+
+function Write-Log([string]$Message,[string]$Level='INFO'){
+  $ts=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+  Add-Content -Path $logPath -Value "[] [] $Message"
+}
+
+function Test-PortOpen([string]`$TargetHost='127.0.0.1',[int]`$Port){
+  try{
+    $client=New-Object System.Net.Sockets.TcpClient
+    $async=$client.BeginConnect(`$TargetHost,`$Port,$null,$null)
+    $wait=$async.AsyncWaitHandle.WaitOne(500)
+    if(-not $wait){ $client.Close(); return $false }
+    $null=$client.EndConnect($async)
+    $client.Close()
+    return $true
+  }catch{ return $false }
+}
+
+function Kill-DashboardUvicorn{
+  $procs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+    Where-Object { $_.CommandLine -match "uvicorn\s+server:app" -and $_.CommandLine -match [regex]::Escape($DashRoot) }
+  foreach($p in $procs){
+    try{
+      Write-Log "Killing stale dashboard python.exe pid=$($p.ProcessId)" 'WARN'
+      Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+    }catch{}
+  }
+}
+
+Write-Log "Watchdog started. DashRoot=$DashRoot Port=$Port"
+
+while($true){
+  try{
+    if(-not (Test-Path -Path $startScript -PathType Leaf)){
+      Write-Log "Start script missing: $startScript" 'ERROR'
+    } else {
+      $up = Test-PortOpen -Port $Port
+      if(-not $up){
+        Write-Log "Port $Port DOWN. Restarting dashboard..." 'WARN'
+        Kill-DashboardUvicorn
+        Start-Process -FilePath "powershell.exe" -ArgumentList @(
+          "-NoProfile","-ExecutionPolicy","Bypass","-WindowStyle","Hidden","-File", """","-Port", "$Port"
+        ) -WindowStyle Hidden | Out-Null
+        Start-Sleep -Seconds 2
+        if(Test-PortOpen -Port $Port){
+          Write-Log "Port $Port UP (after restart)." 'INFO'
+        } else {
+          Write-Log "Port $Port still DOWN (after restart)." 'ERROR'
+        }
+      }
+    }
+  } catch {
+    Write-Log ("Watchdog loop error: " + $_.Exception.Message) 'ERROR'
+  }
+  Start-Sleep -Seconds 30
+}

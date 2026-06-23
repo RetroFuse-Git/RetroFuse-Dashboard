@@ -1,0 +1,64 @@
+{
+  "schema": "RetroFuse.FolderBlueprint.v0.1",
+  "folder_name": "Dashboard",
+  "folder_root": "D:\\RETROFUSE_OPS\\Dashboard",
+  "lane": "OPS",
+  "project": "RetroFuse OPS",
+  "authority_class": "dashboard_surface",
+  "default_task_class": "DASHBOARD_REPAIR_REVIEW",
+  "allowed_task_classes": [
+    "DASHBOARD_REPAIR_REVIEW",
+    "GENERAL_LSS_REVIEW"
+  ],
+  "required_schema_by_task_class": {
+    "DASHBOARD_REPAIR_REVIEW": "DASHBOARD_REPAIR_REVIEW_RESULT",
+    "GENERAL_LSS_REVIEW": "workforce_sdk_floor_task_result_v1"
+  },
+  "write_policy": {
+    "default": "read_only",
+    "allowed_write_modes": [],
+    "forbidden_targets": [
+      "CR",
+      "Ledger",
+      "capsules",
+      "SAFEPOINT payloads"
+    ]
+  },
+  "evidence_roots": [
+    "D:\\RETROFUSE_OPS\\Registry\\OPS_COO\\CR_OPS",
+    "D:\\RETROFUSE_OPS\\Registry\\OPS_COO\\Ledger",
+    "D:\\RETROFUSE_OPS\\_DailyBundles",
+    "D:\\RETROFUSE_OPS\\_DailyBundles\\_staging",
+    "D:\\RETROFUSE_OPS\\_Capsules"
+  ],
+  "source_truth_roots": [
+    "D:\\RETROFUSE_OPS\\Registry\\OPS_COO\\CR_OPS",
+    "D:\\RETROFUSE_OPS\\Registry\\OPS_COO\\Ledger"
+  ],
+  "derived_context_roots": [
+    "D:\\RETROFUSE_OPS\\Dashboard",
+    "D:\\RETROFUSE_OPS\\_ContinuityArtifacts"
+  ],
+  "forbidden_context_patterns": [
+    "User Data\\AutofillStates",
+    ".venv\\Lib\\site-packages\\pip",
+    "_BrokenBackups",
+    "$Recycle.Bin"
+  ],
+  "path_truth_policy": "required",
+  "final_response_gate_required": true,
+  "model_route": {
+    "required_model": "gpt-oss:120b-cloud",
+    "route_mismatch_behavior": "abort"
+  },
+  "capsule_policy": {
+    "capsules_are": "continuity_artifacts",
+    "cleanup_delete_sync_recommendations_allowed": false,
+    "scheduled_task_enablement": "hold_until_manual_validation_receipt",
+    "safepoint_eligibility": "requires_accepted_capsule_set_and_receipts"
+  },
+  "inheritance": {
+    "parent_blueprint": "D:\\RETROFUSE_OPS\\RETROFUSE_FOLDER_BLUEPRINT.json",
+    "override_allowed": false
+  }
+}

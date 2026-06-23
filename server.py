@@ -1,0 +1,4144 @@
+# RetroFuse OPS Dashboard server.py (v1.7_lineage_gate)
+# - Snapshot & Overview: includes OPS Signals pills (4)
+# - Browser Telemetry: collapsible RC1/RC2/RC3/Renderers/GPU (NO pills here)
+# - Disks, SAFEPOINT, Alpha, Notes: restored
+# - Bolt Lineage Gate: approved patch carried onto v1.7 baseline
+#
+# Design goals:
+# - ASCII-only embedded HTML (avoid mojibake / unicodeescape issues)
+# - Robust snapshot discovery in STATUS_DIR (doesn't assume a single filename)
+# - RC1 detection: ungoogled-chromium on D:\ungoogled-chromium_*\chrome.exe
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import shutil
+import time
+import hashlib
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse, JSONResponse
+from app.model_dashboard import build_model_dashboard, build_edit_receipt, save_edit_receipt, list_edit_receipts, build_asset_inventory, build_routing_eligibility, build_mode_aware_dashboard, build_wrapper_registry
+
+APP_VERSION = "v1.7_lineage_gate"
+SAFEPOINT_PROOF_MAX_AGE_SECONDS = 24 * 60 * 60
+
+OPS_ROOT = Path(r"D:\RETROFUSE_OPS")
+STATUS_DIR = OPS_ROOT / "Status" / "RFCC"
+
+# Ops signals JSON (produced by DailyCheck)
+OPS_SIGNALS_JSON = STATUS_DIR / "ops_signals.json"
+
+# Alpha capture location
+ALPHA_RAW_DIR = OPS_ROOT / "Alpha" / "Raw"
+
+# SAFEPOINT roots
+ARCHIVE_ROOTS = [
+    Path(r"D:\PORTTORETRO_ARCHIVE\SAFEPOINT_ENGINE\SAFEPOINTS"),
+]
+
+# RC2 root marker (for "not distinct yet" note)
+RC2_ROOT_MARKER = Path(r"D:\PORTTORETRO_ARCHIVE\PROJECTS\Bolt\RC2")
+
+# Bolt RC2 controller paths
+BOLT_ROOT = Path(r"D:\PORTTORETRO_ARCHIVE\PROJECTS\Bolt")
+BOLT_SAFEPOINTS_DIR = BOLT_ROOT / "Artifacts" / "SAFEPOINTS"
+BOLT_SHELL_ROOT = BOLT_ROOT / "RC2" / "Shell" / "BoltShell"
+BOLT_HEART_DIR = BOLT_ROOT / "_DailyBundles" / "HeartBundles"
+BOLT_STATE = BOLT_SHELL_ROOT / "controller_state.json"
+BOLT_CMDLOG = BOLT_SHELL_ROOT / "cmdlog.jsonl"
+BOLT_LOCK = BOLT_SHELL_ROOT / "controller.lock"
+BOLT_STARTUP_RECEIPT = BOLT_ROOT / "RC2" / "Logs" / "startup_receipt_latest.md"
+BOLT_PROVENANCE = BOLT_ROOT / "RC2" / "Logs" / "startup_provenance.jsonl"
+BOLT_SECRETARY_STATUS = BOLT_ROOT / "_DailyBundles" / "SecretaryState" / "secretary_status.json"
+BOLT_WORKER_ARBITER = BOLT_ROOT / "_DailyBundles" / "SecretaryState" / "worker_arbiter.jsonl"
+BOLT_WORKER_CONSUMED = BOLT_ROOT / "_DailyBundles" / "SecretaryState" / "worker_consumed.jsonl"
+BOLT_AUTHORITY_PACKETS = BOLT_ROOT / "_DailyBundles" / "AuthorityState" / "authority_packets.jsonl"
+BOLT_CLEANUP_RECEIPT = BOLT_ROOT / "_DailyBundles" / "cleanup_receipt.md"
+BOLT_PROMPT_TRANSPORT_DIR = BOLT_ROOT / "_DailyBundles" / "SecretaryState" / "worker_prompt_transport"
+BOLT_RETENTION_POLICY = BOLT_ROOT / "retention_policy.json"
+BOLT_CHECKPOINTER_REPORT = BOLT_ROOT / "_DailyBundles" / "SecretaryState" / "checkpointer_validation" / "latest_report.json"
+BOLT_SAFEPOINT_REPORT = BOLT_ROOT / "_DailyBundles" / "SecretaryState" / "safepoint_validation" / "latest_report.json"
+BOLT_SAFEPOINT_VALIDATOR = BOLT_ROOT / "Tools" / "validate_bolt_safepoint.py"
+BOLT_SESSION_BACKLOG_DIR = BOLT_ROOT / "_DailyBundles" / "_SessionBacklog"
+BOLT_QUARANTINE_DIR = BOLT_ROOT / "_DailyBundles" / "_Quarantine"
+# OPS COO orchestrator telemetry paths
+ORCH_LOG_DIR = OPS_ROOT / "Logs" / "OPS_COO"
+ORCH_LATEST = ORCH_LOG_DIR / "OpsCOO_Daily_Orchestrator_Latest.json"
+ORCH_LOCK = ORCH_LOG_DIR / "OpsCOO_Daily_Orchestrator.lock"
+
+# SMC WRC observation paths
+SMC_DD_ROOT = Path(r"D:\PORTTORETRO_ARCHIVE\PROJECTS\Symphony\Projects\SMC_DDriveRecovery")
+SMC_WRC_OBS_DIR = SMC_DD_ROOT / "_recovery" / "scan_state" / "wrc_observation"
+SMC_WRC_CURRENT_STATUS = SMC_WRC_OBS_DIR / "WRC_CurrentStatus.json"
+
+TEMPLATE_INDEX = OPS_ROOT / "Dashboard" / "templates" / "index.html"
+PROJECT_BOARD_CACHE = OPS_ROOT / "Dashboard" / "api_debug_4b.json"
+PLANES_REGISTRY_DIR = OPS_ROOT / "Registry" / "OPS_COO" / "Registration"
+WORKER_EVENTS_DIR = OPS_ROOT / "Registry" / "OPS_COO" / "State" / "WorkerEvents"
+
+# If you have a canonical DailyCheck snapshot name, you can set it here.
+# Otherwise, the server will scan STATUS_DIR for the newest JSON file.
+PREFERRED_SNAPSHOT_FILES = [
+    "DailyCheck_latest.json",
+    "DailyCheck_snapshot.json",
+    "dailycheck_latest.json",
+    "latest.json",
+]
+
+
+app = FastAPI(title="RetroFuse OPS Dashboard", version=APP_VERSION)
+
+
+_BROWSER_PROCS_CACHE: Dict[str, Any] = {"expires_at": 0.0, "value": []}
+_SAFEPOINT_CACHE: Dict[str, Any] = {"expires_at": 0.0, "value": []}
+_SAFEPOINT_CANDIDATE_CACHE: Dict[str, Any] = {"expires_at": 0.0, "value": []}
+_BOLT_AUX_CACHE: Dict[str, Any] = {
+    "expires_at": 0.0,
+    "backlog_count": 0,
+    "quarantine_count": 0,
+}
+
+
+def _iso_now_local() -> str:
+    # Keep offset in output
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _parse_utc_ts(value: str) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(text)
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _read_json(path: Path) -> Optional[Any]:
+    try:
+        if not path.exists():
+            return None
+        raw = path.read_bytes()
+        last_error: Optional[Exception] = None
+        for encoding in ("utf-8", "utf-8-sig", "utf-16", "utf-16-le"):
+            try:
+                return json.loads(raw.decode(encoding))
+            except Exception as exc:
+                last_error = exc
+        if last_error:
+            return None
+    except Exception:
+        return None
+
+
+def _read_markdown_kv(path: Path) -> Dict[str, str]:
+    if not path.exists():
+        return {}
+    out: Dict[str, str] = {}
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+        for line in content.splitlines():
+            m = re.match(r"^\-\s+([^:]+):\s*(.*)$", line)
+            if m:
+                out[m.group(1).strip()] = m.group(2).strip()
+    except Exception:
+        pass
+    return out
+
+
+def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    if not path.exists():
+        return rows
+    try:
+        for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+    except Exception:
+        return []
+    return rows
+
+
+def _latest_cleanup_receipt() -> Dict[str, Any]:
+    if not BOLT_CLEANUP_RECEIPT.exists():
+        return {}
+    try:
+        lines = BOLT_CLEANUP_RECEIPT.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return {}
+
+    blocks: List[List[str]] = []
+    current: List[str] = []
+    for raw in lines:
+        line = raw.rstrip()
+        if line.startswith("## Cleanup Receipt "):
+            if current:
+                blocks.append(current)
+            current = [line]
+            continue
+        if current:
+            current.append(line)
+    if current:
+        blocks.append(current)
+    if not blocks:
+        return {}
+
+    latest = blocks[-1]
+    out: Dict[str, Any] = {"header": latest[0]}
+    m = re.match(r"^## Cleanup Receipt\s+(.+)$", latest[0])
+    if m:
+        out["receipt_utc"] = m.group(1).strip()
+    for line in latest[1:]:
+        if not line.startswith("- ") or ":" not in line:
+            continue
+        key, value = line[2:].split(":", 1)
+        out[key.strip()] = value.strip()
+    return out
+
+
+def _load_retention_policy() -> Dict[str, Any]:
+    data = _read_json(BOLT_RETENTION_POLICY)
+    return data if isinstance(data, dict) else {}
+
+
+def _safe_sha256(path: Path) -> str:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest().upper()
+    except Exception:
+        return ""
+
+
+def _latest_safepoint_artifact() -> Dict[str, Any]:
+    if not BOLT_SAFEPOINTS_DIR.exists():
+        return {}
+    try:
+        zips = sorted(
+            (p for p in BOLT_SAFEPOINTS_DIR.glob("*_FULL.zip") if p.is_file()),
+            key=_safe_stat_mtime,
+            reverse=True,
+        )
+    except Exception:
+        return {}
+    if not zips:
+        return {}
+    zip_path = zips[0]
+    stem = zip_path.name.replace("_FULL.zip", "")
+    receipt_path = BOLT_SAFEPOINTS_DIR / f"{stem}_RECEIPT.json"
+    return {
+        "zip_path": str(zip_path),
+        "zip_name": zip_path.name,
+        "zip_sha256": _safe_sha256(zip_path),
+        "zip_mtime": datetime.fromtimestamp(zip_path.stat().st_mtime).astimezone().isoformat(timespec="seconds"),
+        "receipt_path": str(receipt_path) if receipt_path.exists() else "",
+        "receipt_name": receipt_path.name if receipt_path.exists() else "",
+    }
+
+
+def _run_bolt_safepoint_validator() -> Dict[str, Any]:
+    if not BOLT_SAFEPOINT_VALIDATOR.exists():
+        return {
+            "ok": False,
+            "error": f"Validator missing: {BOLT_SAFEPOINT_VALIDATOR}",
+        }
+    try:
+        cp = subprocess.run(
+            [sys.executable, str(BOLT_SAFEPOINT_VALIDATOR), "--json"],
+            cwd=str(BOLT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": f"Validator execution failed: {exc}"}
+
+    stdout = (cp.stdout or "").strip()
+    stderr = (cp.stderr or "").strip()
+    try:
+        report = json.loads(stdout) if stdout else {}
+    except Exception:
+        report = {}
+    ok = cp.returncode == 0 and isinstance(report, dict) and bool(report)
+    return {
+        "ok": ok,
+        "returncode": cp.returncode,
+        "report": report if isinstance(report, dict) else {},
+        "stderr": stderr,
+        "stdout": stdout[:4000],
+    }
+
+
+def _build_bolt_adjudication_snapshot(
+    state: Dict[str, Any],
+    receipt: Dict[str, str],
+    secretary: Dict[str, Any],
+    boot_status: str,
+    boot_status_reason: str,
+) -> Dict[str, Any]:
+    conformance = _read_json(BOLT_CHECKPOINTER_REPORT)
+    conformance = conformance if isinstance(conformance, dict) else {}
+    safepoint = _read_json(BOLT_SAFEPOINT_REPORT)
+    safepoint = safepoint if isinstance(safepoint, dict) else {}
+    current_safepoint = _latest_safepoint_artifact()
+    arbiter_rows = _read_jsonl(BOLT_WORKER_ARBITER)
+    consumed_rows = _read_jsonl(BOLT_WORKER_CONSUMED)
+    authority_rows = _read_jsonl(BOLT_AUTHORITY_PACKETS)
+    retention_policy = _load_retention_policy()
+    cleanup_receipt = _latest_cleanup_receipt()
+
+    accepted_rows: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for row in arbiter_rows:
+        if row.get("accepted") is not True:
+            continue
+        key = (str(row.get("task_id") or ""), str(row.get("result_utc") or ""))
+        if not all(key):
+            continue
+        prev = accepted_rows.get(key)
+        if prev is None or str(row.get("decided_utc") or "") >= str(prev.get("decided_utc") or ""):
+            accepted_rows[key] = row
+
+    consumed_keys = {
+        (str(row.get("task_id") or ""), str(row.get("result_utc") or ""))
+        for row in consumed_rows
+        if row.get("task_id") and row.get("result_utc")
+    }
+    authority_keys = {
+        (
+            str(((row.get("metadata") or {}) if isinstance(row.get("metadata"), dict) else {}).get("task_id") or ""),
+            str(((row.get("metadata") or {}) if isinstance(row.get("metadata"), dict) else {}).get("result_utc") or ""),
+        )
+        for row in authority_rows
+        if isinstance(row, dict)
+    }
+
+    latest_accepted = None
+    if accepted_rows:
+        latest_accepted = max(
+            accepted_rows.values(),
+            key=lambda row: str(row.get("decided_utc") or ""),
+        )
+
+    stalled_imports: List[Dict[str, Any]] = []
+    for key, row in accepted_rows.items():
+        consumed = key in consumed_keys
+        imported = key in authority_keys
+        if not consumed or not imported:
+            stalled_imports.append({
+                "task_id": key[0],
+                "result_utc": key[1],
+                "reason": row.get("reason", ""),
+                "consumed": consumed,
+                "authority_imported": imported,
+            })
+    stalled_imports.sort(key=lambda row: (row["result_utc"], row["task_id"]))
+
+    ttl_seconds = 0
+    transient_classes = retention_policy.get("artifact_classes")
+    if isinstance(transient_classes, dict):
+        transient_cfg = transient_classes.get("transient_transport")
+        if isinstance(transient_cfg, dict):
+            try:
+                ttl_seconds = int(transient_cfg.get("ttl_seconds") or 0)
+            except Exception:
+                ttl_seconds = 0
+
+    cleanup_blocked: List[Dict[str, Any]] = []
+    now_ts = time.time()
+    if BOLT_PROMPT_TRANSPORT_DIR.exists():
+        for path in sorted(BOLT_PROMPT_TRANSPORT_DIR.glob("*.prompt.txt")):
+            task_id = path.name.split(".", 1)[0]
+            age_seconds = max(0, int(now_ts - _safe_stat_mtime(path)))
+            authority_imported = any(key[0] == task_id for key in authority_keys)
+            if ttl_seconds and age_seconds >= ttl_seconds and not authority_imported:
+                cleanup_blocked.append({
+                    "task_id": task_id,
+                    "path": str(path),
+                    "age_seconds": age_seconds,
+                    "authority_imported": authority_imported,
+                })
+
+    conformance_level = str(conformance.get("conformance_level") or "UNPROVEN")
+    passed_all_base = bool(conformance.get("passed_all_base", False))
+    safepoint_level = str(safepoint.get("conformance_level") or "UNPROVEN")
+    safepoint_passed = bool(safepoint.get("passed_all_base", False))
+    safepoint_validated_utc = str(safepoint.get("validated_utc") or "")
+    safepoint_validated_dt = _parse_utc_ts(safepoint_validated_utc)
+    safepoint_validation_age_seconds = (
+        max(0, int((datetime.now(timezone.utc) - safepoint_validated_dt.astimezone(timezone.utc)).total_seconds()))
+        if safepoint_validated_dt else None
+    )
+    safepoint_proof_fresh = (
+        safepoint_validation_age_seconds is not None
+        and safepoint_validation_age_seconds <= SAFEPOINT_PROOF_MAX_AGE_SECONDS
+    )
+    safepoint_results = safepoint.get("results") if isinstance(safepoint.get("results"), dict) else {}
+    safepoint_select = safepoint_results.get("select_artifact") if isinstance(safepoint_results.get("select_artifact"), dict) else {}
+    safepoint_receipt = safepoint_results.get("verify_receipt") if isinstance(safepoint_results.get("verify_receipt"), dict) else {}
+    validated_zip_path = str(((safepoint_select.get("artifacts") or {}) if isinstance(safepoint_select.get("artifacts"), dict) else {}).get("zip_path") or "")
+    validated_receipt_path = str(((safepoint_select.get("artifacts") or {}) if isinstance(safepoint_select.get("artifacts"), dict) else {}).get("receipt_path") or "")
+    validated_zip_sha = str(((safepoint_receipt.get("artifacts") or {}) if isinstance(safepoint_receipt.get("artifacts"), dict) else {}).get("actual_zip_sha256") or "")
+    safepoint_lineage_clear = bool(
+        safepoint_passed
+        and current_safepoint
+        and current_safepoint.get("zip_path") == validated_zip_path
+        and current_safepoint.get("zip_sha256") == validated_zip_sha
+    )
+    secretary_session = str(secretary.get("startup_session_id") or "")
+    receipt_session = str(receipt.get("startup_session_id") or "")
+    session_match = bool(receipt_session and secretary_session and receipt_session == secretary_session)
+    replay_boundary_clear = boot_status == "READY" and session_match
+
+    degraded_reasons: List[str] = []
+    if not passed_all_base:
+        degraded_reasons.append("Checkpointer conformance is not proven.")
+    if not safepoint_passed:
+        degraded_reasons.append("SAFEPOINT conformance is not proven.")
+    if safepoint_passed and not safepoint_proof_fresh:
+        degraded_reasons.append("SAFEPOINT proof is stale.")
+    if safepoint_passed and not safepoint_lineage_clear:
+        degraded_reasons.append("SAFEPOINT artifact drift detected after last validation.")
+    if not replay_boundary_clear:
+        degraded_reasons.append("Startup lineage and replay boundary are not strictly proven.")
+    if stalled_imports:
+        degraded_reasons.append(f"Authority import is stalled for {len(stalled_imports)} accepted worker result(s).")
+    if cleanup_blocked:
+        degraded_reasons.append(f"Cleanup is blocked for {len(cleanup_blocked)} stale prompt transport artifact(s).")
+    degraded_highlights: List[str] = []
+    if stalled_imports:
+        stalled_ids = ", ".join(row["task_id"] for row in stalled_imports[:5])
+        suffix = " ..." if len(stalled_imports) > 5 else ""
+        degraded_highlights.append(f"Stalled authority import: {stalled_ids}{suffix}")
+    if cleanup_blocked:
+        cleanup_ids = ", ".join(row["task_id"] for row in cleanup_blocked[:5])
+        suffix = " ..." if len(cleanup_blocked) > 5 else ""
+        degraded_highlights.append(f"Cleanup blocked for: {cleanup_ids}{suffix}")
+    if not passed_all_base:
+        degraded_highlights.append("Conformance gate failed.")
+    if not safepoint_passed:
+        degraded_highlights.append("SAFEPOINT gate failed.")
+    if safepoint_passed and not safepoint_proof_fresh:
+        degraded_highlights.append(
+            f"SAFEPOINT proof stale: {safepoint_validation_age_seconds or 0}s old exceeds {SAFEPOINT_PROOF_MAX_AGE_SECONDS}s."
+        )
+    if safepoint_passed and not safepoint_lineage_clear:
+        degraded_highlights.append(f"SAFEPOINT drift: {current_safepoint.get('zip_name', 'unknown')} no longer matches validated proof.")
+    if not replay_boundary_clear:
+        degraded_highlights.append("Replay boundary proof is unclear.")
+
+    truths = [
+        {
+            "label": "Startup lineage",
+            "truth": "READY" if boot_status == "READY" else boot_status,
+            "why": boot_status_reason,
+        },
+        {
+            "label": "Checkpointer conformance",
+            "truth": conformance_level,
+            "why": f"Latest proof at {conformance.get('validated_utc', 'unavailable')} with passed_all_base={passed_all_base}.",
+        },
+        {
+            "label": "SAFEPOINT conformance",
+            "truth": safepoint_level,
+            "why": f"Latest SAFEPOINT proof at {safepoint_validated_utc or 'unavailable'} with passed_all_base={safepoint_passed}.",
+        },
+        {
+            "label": "SAFEPOINT proof freshness",
+            "truth": "FRESH" if safepoint_proof_fresh else "STALE",
+            "why": (
+                f"Validation age is {safepoint_validation_age_seconds}s against a {SAFEPOINT_PROOF_MAX_AGE_SECONDS}s limit."
+                if safepoint_validation_age_seconds is not None else "SAFEPOINT validation timestamp is unavailable."
+            ),
+        },
+        {
+            "label": "SAFEPOINT lineage",
+            "truth": "MATCHED" if safepoint_lineage_clear else "DRIFTED",
+            "why": (
+                f"Validated ZIP {Path(validated_zip_path).name if validated_zip_path else 'n/a'} with SHA {validated_zip_sha or 'n/a'}."
+                if safepoint_passed else "SAFEPOINT proof is not yet passing."
+            ),
+        },
+        {
+            "label": "Latest accepted worker boundary",
+            "truth": (
+                f"{latest_accepted.get('task_id')} accepted with {latest_accepted.get('reason')}"
+                if latest_accepted else "No accepted worker result found."
+            ),
+            "why": (
+                f"Latest accepted result decided at {latest_accepted.get('decided_utc')} by {latest_accepted.get('decided_by')}."
+                if latest_accepted else "worker_arbiter.jsonl has no accepted rows."
+            ),
+        },
+        {
+            "label": "Cleanup law",
+            "truth": "ACTIVE" if not cleanup_blocked else "BLOCKED",
+            "why": (
+                f"Latest cleanup receipt {cleanup_receipt.get('receipt_utc', 'unavailable')} removed {cleanup_receipt.get('removed_path', 'no recorded deletion')}."
+                if cleanup_receipt else "No cleanup receipt found."
+            ),
+        },
+    ]
+
+    blocked = []
+    for row in stalled_imports:
+        blocked.append(
+            f"Accepted result {row['task_id']} is blocked because consumed={row['consumed']} and authority_imported={row['authority_imported']}."
+        )
+    for row in cleanup_blocked:
+        blocked.append(
+            f"Prompt transport {row['task_id']} is retained because authority proof is missing after {row['age_seconds']}s."
+        )
+    if not passed_all_base:
+        blocked.append("Checkpoint promotion proof is unavailable because base conformance is not passing.")
+    if not safepoint_passed:
+        blocked.append("SAFEPOINT promotion proof is unavailable because SAFEPOINT conformance is not passing.")
+    if safepoint_passed and not safepoint_proof_fresh:
+        blocked.append("SAFEPOINT proof is stale and requires revalidation before promotion or replay trust.")
+    if safepoint_passed and not safepoint_lineage_clear:
+        blocked.append("SAFEPOINT lineage is blocked because the latest ZIP on disk no longer matches the last validated artifact.")
+    if not replay_boundary_clear:
+        blocked.append("Replay boundary is unclear because startup lineage is not strictly aligned across controller, receipt, and secretary.")
+
+    unlawful = []
+    if not passed_all_base:
+        unlawful.append("SAFEPOINT or checkpoint promotion cannot proceed lawfully until base conformance passes.")
+    if not safepoint_passed:
+        unlawful.append("SAFEPOINT-based replay or archival promotion cannot proceed lawfully until SAFEPOINT conformance passes.")
+    if safepoint_passed and not safepoint_proof_fresh:
+        unlawful.append("SAFEPOINT-based replay or archival promotion cannot proceed lawfully while SAFEPOINT proof is stale.")
+    if safepoint_passed and not safepoint_lineage_clear:
+        unlawful.append("SAFEPOINT-based replay or archival promotion cannot proceed lawfully while the validated SAFEPOINT artifact has drifted.")
+    if stalled_imports:
+        unlawful.append("Prompt cleanup and downstream archival cannot proceed lawfully for accepted worker results until authority import is committed.")
+    if not replay_boundary_clear:
+        unlawful.append("Replay or resume claims cannot proceed lawfully while startup lineage proof is unclear.")
+
+    return {
+        "status": "DEGRADED" if degraded_reasons else "CLEAN",
+        "headline": "Degraded mode active." if degraded_reasons else "No degraded condition detected.",
+        "degraded_reasons": degraded_reasons,
+        "degraded_highlights": degraded_highlights,
+        "truths": truths,
+        "blocked": blocked,
+        "unlawful": unlawful,
+        "replay_boundary_clear": replay_boundary_clear,
+        "latest_accepted": latest_accepted or {},
+        "stalled_imports": stalled_imports,
+        "cleanup_blocked": cleanup_blocked,
+        "cleanup_receipt": cleanup_receipt,
+        "conformance": {
+            "path": str(BOLT_CHECKPOINTER_REPORT),
+            "level": conformance_level,
+            "validated_utc": conformance.get("validated_utc", ""),
+            "passed_all_base": passed_all_base,
+            "passed_all_detected": bool(conformance.get("passed_all_detected", False)),
+        },
+        "safepoint": {
+            "path": str(BOLT_SAFEPOINT_REPORT),
+            "level": safepoint_level,
+            "validated_utc": safepoint.get("validated_utc", ""),
+            "passed_all_base": safepoint_passed,
+            "passed_all_detected": bool(safepoint.get("passed_all_detected", False)),
+            "proof_max_age_seconds": SAFEPOINT_PROOF_MAX_AGE_SECONDS,
+            "validation_age_seconds": safepoint_validation_age_seconds,
+            "proof_fresh": safepoint_proof_fresh,
+            "lineage_clear": safepoint_lineage_clear,
+            "validated_zip_path": validated_zip_path,
+            "validated_receipt_path": validated_receipt_path,
+            "validated_zip_sha256": validated_zip_sha,
+            "current": current_safepoint,
+        },
+    }
+
+
+def _safe_stat_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except Exception:
+        return 0.0
+
+
+def _find_latest_status_snapshot() -> Tuple[Optional[Path], Dict[str, Any]]:
+    """
+    Look for a DailyCheck snapshot in STATUS_DIR. Prefer known filenames; otherwise
+    pick the newest JSON file excluding ops_signals.json.
+    """
+    if not STATUS_DIR.exists():
+        return None, {}
+
+    # 1) Prefer known filenames
+    for name in PREFERRED_SNAPSHOT_FILES:
+        p = STATUS_DIR / name
+        data = _read_json(p)
+        if isinstance(data, dict):
+            return p, data
+
+    # 2) Scan newest *.json, excluding ops_signals
+    candidates: List[Path] = []
+    try:
+        for p in STATUS_DIR.glob("*.json"):
+            if p.name.lower() == OPS_SIGNALS_JSON.name.lower():
+                continue
+            candidates.append(p)
+    except Exception:
+        candidates = []
+
+    if not candidates:
+        return None, {}
+
+    candidates.sort(key=_safe_stat_mtime, reverse=True)
+    for p in candidates[:10]:
+        data = _read_json(p)
+        if isinstance(data, dict):
+            return p, data
+
+    return candidates[0], {}
+
+
+def _ps_json(ps: str) -> Optional[Any]:
+    """
+    Run a powershell snippet that outputs JSON.
+    """
+    try:
+        cp = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True,
+            text=True,
+            timeout=12,
+        )
+        out = (cp.stdout or "").strip()
+        if not out:
+            return None
+        return json.loads(out)
+    except Exception:
+        return None
+
+
+def _ttl_cache_get(cache: Dict[str, Any]) -> Optional[Any]:
+    if float(cache.get("expires_at", 0.0)) > time.time():
+        return cache.get("value")
+    return None
+
+
+def _ttl_cache_set(cache: Dict[str, Any], value: Any, ttl_seconds: float) -> Any:
+    cache["value"] = value
+    cache["expires_at"] = time.time() + ttl_seconds
+    return value
+
+
+def _list_browser_procs() -> List[Dict[str, Any]]:
+    """
+    Return processes with Name in {chrome.exe, vivaldi.exe, msedgewebview2.exe}.
+    Fields: pid, name, exe_path, cmd
+    """
+    cached = _ttl_cache_get(_BROWSER_PROCS_CACHE)
+    if isinstance(cached, list):
+        return cached
+
+    ps = r"""
+$candidates = @(Get-Process -Name chrome,vivaldi,msedgewebview2 -ErrorAction SilentlyContinue |
+  Select-Object Id, ProcessName, Path)
+
+if (-not $candidates -or $candidates.Count -eq 0) {
+  @() | ConvertTo-Json -Depth 3
+  exit
+}
+
+$idExpr = (($candidates | ForEach-Object { "ProcessId = $($_.Id)" }) -join " OR ")
+$details = @{}
+Get-CimInstance Win32_Process -Filter $idExpr -ErrorAction SilentlyContinue |
+  ForEach-Object { $details[[int]$_.ProcessId] = $_ }
+
+$rows = foreach ($p in $candidates) {
+  $detail = $details[[int]$p.Id]
+  [pscustomobject]@{
+    ProcessId      = [int]$p.Id
+    Name           = if ($p.ProcessName -match '\.exe$') { $p.ProcessName } else { "$($p.ProcessName).exe" }
+    ExecutablePath = if ($detail -and $detail.ExecutablePath) { $detail.ExecutablePath } else { $p.Path }
+    CommandLine    = if ($detail) { $detail.CommandLine } else { $null }
+  }
+}
+
+$rows | ConvertTo-Json -Depth 3
+""".strip()
+    data = _ps_json(ps)
+    if data is None:
+        return []
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        out.append(
+            {
+                "pid": row.get("ProcessId"),
+                "name": row.get("Name"),
+                "exe_path": row.get("ExecutablePath"),
+                "cmd": row.get("CommandLine"),
+            }
+        )
+    return _ttl_cache_set(_BROWSER_PROCS_CACHE, out, ttl_seconds=5.0)
+
+
+def _detect_rc1(procs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    RC1 is ungoogled-chromium installed under D:\\\\ungoogled-chromium_*\\\\chrome.exe
+    """
+    candidates: List[Dict[str, Any]] = []
+    fallback: List[Dict[str, Any]] = []
+    for pr in procs:
+        exe = (pr.get("exe_path") or "")
+        exe_l = exe.lower()
+        if exe_l.startswith(r"d:\ungoogled-chromium_") and exe_l.endswith(r"\chrome.exe"):
+            cmd_l = (pr.get("cmd") or "").lower()
+            if "--type=" not in cmd_l:
+                candidates.append(pr)
+            else:
+                fallback.append(pr)
+    chosen = candidates[0] if candidates else (fallback[0] if fallback else None)
+    if chosen:
+        return {
+            "status": "running",
+            "process_id": chosen.get("pid"),
+            "executable_path": chosen.get("exe_path") or "",
+            "command_line": chosen.get("cmd") or "",
+            "detected_by": "ungoogled_chromium_path",
+        }
+    return {"status": "not_running"}
+
+def _detect_rc2(procs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Detects Bolt RC2: Any Chrome/Chromium process using the specific RC2 profile.
+    """
+    profile_marker = r"projects\bolt\rc2\chromeprofile"
+    
+    candidates: List[Dict[str, Any]] = []
+    fallback: List[Dict[str, Any]] = []
+    for pr in procs:
+        exe_l = (pr.get("exe_path") or "").lower()
+        cmd_l = (pr.get("cmd") or "").lower()
+        
+        # Identification by signature (profile) rather than installation path
+        if ("chrome.exe" in exe_l or "chromium.exe" in exe_l) and profile_marker in cmd_l:
+            if "--type=" not in cmd_l:
+                candidates.append(pr)
+            else:
+                fallback.append(pr)
+    chosen = candidates[0] if candidates else (fallback[0] if fallback else None)
+    if chosen:
+        return {
+            "status": "running",
+            "process_id": chosen.get("pid"),
+            "executable_path": chosen.get("exe_path") or "",
+            "command_line": chosen.get("cmd") or "",
+            "detected_by": "rc2_profile_signature",
+        }
+    return {"status": "not_running"}
+
+
+def _detect_vivaldi_rc3(procs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Conservative RC3 detection: require a profile or launch signature, otherwise
+    prefer unknown over a false positive.
+    """
+    markers = [
+        r"projects\bolt\rc3",
+        r"--user-data-dir=d:\porttoretro_archive\projects\bolt\rc3",
+        r"rc3profile",
+    ]
+    for pr in procs:
+        name_l = (pr.get("name") or "").lower()
+        exe_l = (pr.get("exe_path") or "").lower()
+        cmd_l = (pr.get("cmd") or "").lower()
+        if name_l == "vivaldi.exe" and any(marker in cmd_l or marker in exe_l for marker in markers):
+            return {
+                "status": "running",
+                "process_id": pr.get("pid"),
+                "executable_path": pr.get("exe_path") or "",
+                "command_line": pr.get("cmd") or "",
+                "detected_by": "rc3_signature",
+            }
+    return {"status": "unknown"}
+
+
+def _renderer_summary(procs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    renderer_pids: List[int] = []
+    for pr in procs:
+        cmd = (pr.get("cmd") or "").lower()
+        if "--type=renderer" in cmd:
+            pid = pr.get("pid")
+            if isinstance(pid, int):
+                renderer_pids.append(pid)
+    return {
+        "renderer_count": len(renderer_pids),
+        "renderer_pids": renderer_pids,
+    }
+
+
+def _gpu_pipeline_summary(procs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    gpu_pids: List[int] = []
+    sample_cmd: Optional[str] = None
+    for pr in procs:
+        cmd = (pr.get("cmd") or "")
+        if "--type=gpu-process" in cmd:
+            pid = pr.get("pid")
+            if isinstance(pid, int):
+                gpu_pids.append(pid)
+            if sample_cmd is None:
+                sample_cmd = cmd
+    return {
+        "gpu_process_count": len(gpu_pids),
+        "sample_gpu_cmd": sample_cmd,
+    }
+
+
+def _disk_list() -> List[Dict[str, Any]]:
+    """
+    Return bytes used/free/total for fixed drives we care about.
+    """
+    out: List[Dict[str, Any]] = []
+    for letter in ["C", "D", "E", "Z"]:
+        root = Path(f"{letter}:\\")
+        if not root.exists():
+            continue
+        try:
+            usage = shutil.disk_usage(str(root))
+            total = int(usage.total)
+            free = int(usage.free)
+            used = total - free
+            out.append({"name": letter, "total_bytes": total, "free_bytes": free, "used_bytes": used})
+        except Exception:
+            continue
+    return out
+
+
+def _latest_zip_under(root: Path) -> Optional[Dict[str, Any]]:
+    if not root.exists():
+        return None
+    latest_path: Optional[Path] = None
+    latest_m: float = 0.0
+    try:
+        for p in root.rglob("*.zip"):
+            m = _safe_stat_mtime(p)
+            if m > latest_m:
+                latest_m = m
+                latest_path = p
+    except Exception:
+        return None
+
+    if latest_path is None:
+        return None
+    try:
+        st = latest_path.stat()
+        return {
+            "name": latest_path.name,
+            "full_path": str(latest_path),
+            "size_bytes": int(st.st_size),
+            "last_write": datetime.fromtimestamp(st.st_mtime).astimezone().isoformat(timespec="seconds"),
+        }
+    except Exception:
+        return {"name": latest_path.name, "full_path": str(latest_path)}
+
+
+def _safepoint_summaries() -> List[Dict[str, Any]]:
+    cached = _ttl_cache_get(_SAFEPOINT_CACHE)
+    if isinstance(cached, list):
+        return cached
+
+    out: List[Dict[str, Any]] = []
+    for root in ARCHIVE_ROOTS:
+        exists = root.exists()
+        zip_count = 0
+        if exists:
+            try:
+                zip_count = sum(1 for _ in root.rglob("*.zip"))
+            except Exception:
+                zip_count = 0
+        out.append(
+            {
+                "root_path": str(root),
+                "exists": bool(exists),
+                "zip_count": zip_count,
+                "latest_zip": _latest_zip_under(root),
+            }
+        )
+    return _ttl_cache_set(_SAFEPOINT_CACHE, out, ttl_seconds=60.0)
+
+
+def _safepoint_candidate_summaries() -> List[Dict[str, Any]]:
+    cached = _ttl_cache_get(_SAFEPOINT_CANDIDATE_CACHE)
+    if isinstance(cached, list):
+        return cached
+
+    root = OPS_ROOT / "_Capsules" / "SAFEPOINT_CANDIDATES"
+    archive_root = OPS_ROOT / "_Capsules" / "_archive" / "SAFEPOINT_CANDIDATES"
+    if not root.exists():
+        return _ttl_cache_set(_SAFEPOINT_CANDIDATE_CACHE, [], ttl_seconds=60.0)
+
+    out: List[Dict[str, Any]] = []
+    try:
+        candidate_dirs = [
+            p for p in root.iterdir()
+            if p.is_dir() and p.name.startswith("SAFEPOINT_CANDIDATE_")
+        ]
+    except Exception:
+        candidate_dirs = []
+
+    def _candidate_key(path: Path) -> float:
+        return _safe_stat_mtime(path)
+
+    for candidate_dir in sorted(candidate_dirs, key=_candidate_key, reverse=True):
+        dashboard = _read_json(candidate_dir / "DASHBOARD.json")
+        manifest = _read_json(candidate_dir / "rollup_manifest.json")
+        receipt = _read_json(candidate_dir / "SAFEPOINT_CANDIDATE_RECEIPT.json")
+        if not isinstance(dashboard, dict):
+            dashboard = {}
+        if not isinstance(manifest, dict):
+            manifest = {}
+        if not isinstance(receipt, dict):
+            receipt = {}
+
+        included_week_ranges = dashboard.get("included_week_ranges")
+        if not isinstance(included_week_ranges, list):
+            included_week_ranges = manifest.get("included_week_ranges") if isinstance(manifest.get("included_week_ranges"), list) else []
+        created_utc = str(manifest.get("created_utc") or receipt.get("timestamp_utc") or "")
+        created_dt = _parse_utc_ts(created_utc)
+        age_days: Optional[float] = None
+        if created_dt:
+            age_days = round(max(0.0, (datetime.now(timezone.utc) - created_dt.astimezone(timezone.utc)).total_seconds() / 86400.0), 3)
+        status = str(dashboard.get("dashboard_visibility") or manifest.get("dashboard_visibility") or "BLOCKED")
+        out.append(
+            {
+                "candidate_path": str(candidate_dir),
+                "candidate_name": candidate_dir.name,
+                "candidate_status": status,
+                "included_week_ranges": included_week_ranges,
+                "latest_candidate_age_days": age_days,
+                "runtime_authority": False,
+                "production_authority": False,
+                "safepoint_created": False,
+                "authority_effect": "NONE",
+                "dashboard_visibility": status,
+                "receipt_path": str(candidate_dir / "SAFEPOINT_CANDIDATE_RECEIPT.json") if (candidate_dir / "SAFEPOINT_CANDIDATE_RECEIPT.json").exists() else "",
+                "manifest_path": str(candidate_dir / "rollup_manifest.json") if (candidate_dir / "rollup_manifest.json").exists() else "",
+                "sha256_path": str(candidate_dir / "SHA256SUMS.txt") if (candidate_dir / "SHA256SUMS.txt").exists() else "",
+                "packet_root": str(candidate_dir),
+                "archive_root": str(archive_root),
+            }
+        )
+    return _ttl_cache_set(_SAFEPOINT_CANDIDATE_CACHE, out, ttl_seconds=60.0)
+
+
+def _bolt_pid_running(pid: Any) -> bool:
+    try:
+        pid_i = int(pid)
+    except Exception:
+        return False
+    ps = rf"""
+$p = Get-CimInstance Win32_Process -Filter "ProcessId = {pid_i}" -ErrorAction SilentlyContinue
+if ($null -eq $p) {{
+  [pscustomobject]@{{ alive = $false }} | ConvertTo-Json -Compress
+  exit
+}}
+$cmd = [string]$p.CommandLine
+$isBolt = ($p.Name -match 'python(\.exe)?$') -and (
+  $cmd -match 'Bolt_RC2_Controller\.py' -or
+  $cmd -match 'PORTTORETRO_ARCHIVE\\PROJECTS\\Bolt'
+)
+[pscustomobject]@{{ alive = [bool]$isBolt }} | ConvertTo-Json -Compress
+""".strip()
+    data = _ps_json(ps)
+    return bool(isinstance(data, dict) and data.get("alive"))
+
+
+def _count_matching_files(root: Path, pattern: str, recursive: bool = False) -> int:
+    if not root.exists():
+        return 0
+    try:
+        it = root.rglob(pattern) if recursive else root.glob(pattern)
+        return sum(1 for _ in it)
+    except Exception:
+        return 0
+
+
+def _bolt_aux_counts() -> Tuple[int, int]:
+    cached = _ttl_cache_get(_BOLT_AUX_CACHE)
+    if cached is not None:
+        return int(_BOLT_AUX_CACHE.get("backlog_count", 0)), int(_BOLT_AUX_CACHE.get("quarantine_count", 0))
+
+    backlog_count = _count_matching_files(BOLT_SESSION_BACKLOG_DIR, "*.md", recursive=True)
+    quarantine_count = _count_matching_files(BOLT_QUARANTINE_DIR, "*.md", recursive=True)
+    _BOLT_AUX_CACHE["backlog_count"] = backlog_count
+    _BOLT_AUX_CACHE["quarantine_count"] = quarantine_count
+    _BOLT_AUX_CACHE["value"] = True
+    _BOLT_AUX_CACHE["expires_at"] = time.time() + 30.0
+    return backlog_count, quarantine_count
+
+
+def _alpha_summary() -> Dict[str, Any]:
+    if not ALPHA_RAW_DIR.exists():
+        return {"path": str(ALPHA_RAW_DIR), "exists": False, "files_24h": 0, "latest_file": None}
+
+    latest: Optional[Path] = None
+    latest_m = 0.0
+    files_24h = 0
+    now = datetime.now().timestamp()
+    try:
+        for p in ALPHA_RAW_DIR.glob("*"):
+            if not p.is_file():
+                continue
+            m = _safe_stat_mtime(p)
+            if now - m <= 24 * 3600:
+                files_24h += 1
+            if m > latest_m:
+                latest_m = m
+                latest = p
+    except Exception:
+        pass
+
+    latest_obj = None
+    if latest is not None:
+        try:
+            st = latest.stat()
+            latest_obj = {
+                "name": latest.name,
+                "full_path": str(latest),
+                "size_bytes": int(st.st_size),
+                "last_write": datetime.fromtimestamp(st.st_mtime).astimezone().isoformat(timespec="seconds"),
+            }
+        except Exception:
+            latest_obj = {"name": latest.name, "full_path": str(latest)}
+
+    return {
+        "path": str(ALPHA_RAW_DIR),
+        "exists": True,
+        "files_24h": files_24h,
+        "latest_file": latest_obj,
+    }
+
+
+def _bolt_controller_state() -> Dict[str, Any]:
+    """Read controller_state.json and lock file for live Controller (Python) status."""
+    state: Dict[str, Any] = {}
+
+    raw = _read_json(BOLT_STATE)
+    if isinstance(raw, dict):
+        state.update(raw)
+
+    lock = _read_json(BOLT_LOCK)
+    if isinstance(lock, dict):
+        state["lock"] = lock
+
+    return state
+
+
+def _derive_bolt_boot_status(state: Dict[str, Any]) -> str:
+    """
+    Derive high-level boot status from data timestamps only.
+    Avoids process presence checks, controller health, or governor active flags.
+    """
+    if not state:
+        return "AWAITING"
+
+    last_seen_str = state.get("controller_last_seen_utc")
+    last_heart_str = state.get("last_heartbeat_utc")
+
+    last_seen = _parse_utc_ts(last_seen_str)
+    last_heart = _parse_utc_ts(last_heart_str)
+
+    now = datetime.now(timezone.utc)
+
+    if not last_seen:
+        return "OFFLINE"
+
+    diff_seen = (now - last_seen.astimezone(timezone.utc)).total_seconds()
+
+    if diff_seen > 300:  # 5 minutes
+        return "OFFLINE"
+    if diff_seen > 60:  # 1 minute
+        return "STALE"
+
+    # If seen recently, check heartbeats
+    if not last_heart:
+        return "BOOTING"
+
+    diff_heart = (now - last_heart.astimezone(timezone.utc)).total_seconds()
+    if diff_heart < 60:
+        return "READY"
+
+    return "RUNNING"
+
+
+def _verify_bolt_lineage() -> Tuple[str, str]:
+    """
+    Verify RC2 startup lineage across controller state, startup receipt, and
+    the latest provenance receipt record.
+    """
+    if not BOLT_STATE.exists() or not BOLT_STARTUP_RECEIPT.exists() or not BOLT_PROVENANCE.exists():
+        return "UNKNOWN", "Missing required startup artifacts."
+
+    state = _read_json(BOLT_STATE)
+    if not isinstance(state, dict):
+        return "UNKNOWN", "Controller state is missing or unreadable."
+
+    c_pid = state.get("startup_controller_pid") or state.get("controller_pid")
+    c_rv = state.get("startup_runtime_verified_utc") or state.get("runtime_verified_utc")
+    c_tid = (
+        state.get("startup_current_target_id")
+        or state.get("current_target_id")
+        or state.get("runtime_verified_target_id")
+        or state.get("governor_target_id")
+    )
+    if not all([c_pid, c_rv, c_tid]):
+        return "UNKNOWN", "Incomplete lineage fields in controller state."
+
+    expected_lineage = state.get("startup_session_id") or f"{c_pid}|{c_rv}|{c_tid}"
+
+    receipt_kv = _read_markdown_kv(BOLT_STARTUP_RECEIPT)
+    receipt_session = receipt_kv.get("startup_session_id")
+    if not receipt_session:
+        return "UNKNOWN", "Missing startup_session_id in startup receipt."
+
+    provenance_session = None
+    try:
+        lines = BOLT_PROVENANCE.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception as exc:
+        return "UNKNOWN", f"Unable to read startup provenance: {exc}"
+
+    for raw_line in reversed(lines):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("phase") == "receipt" and entry.get("status") == "written":
+            entry_session = entry.get("startup_session_id")
+            if not entry_session:
+                continue
+            if entry_session == receipt_session:
+                provenance_session = entry_session
+                break
+    if not provenance_session:
+        return "UNKNOWN", "No written receipt entry found in startup provenance."
+
+    if expected_lineage == receipt_session == provenance_session:
+        return "READY", "Lineage verified across immutable startup state, receipt, and provenance."
+    return "ARTIFACT_DRIFT", "Controller startup lineage, receipt, and provenance session mismatch."
+
+
+def _bolt_recent_cmdlog(n: int = 20) -> List[Dict[str, Any]]:
+    """Return the last n lines from cmdlog.jsonl."""
+    if not BOLT_CMDLOG.exists():
+        return []
+    try:
+        lines = BOLT_CMDLOG.read_text(encoding="utf-8", errors="replace").splitlines()
+        recent = lines[-n:] if len(lines) > n else lines
+        out: List[Dict[str, Any]] = []
+        for line in reversed(recent):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return []
+
+
+def _bolt_recent_hearts(n: int = 5) -> List[Dict[str, Any]]:
+    """Return metadata for the n most recent HeartBundle .md files."""
+    if not BOLT_HEART_DIR.exists():
+        return []
+    try:
+        files = sorted(
+            (p for p in BOLT_HEART_DIR.glob("HEART_EXTRACT_*.md") if p.is_file()),
+            key=_safe_stat_mtime,
+            reverse=True,
+        )[:n]
+        out: List[Dict[str, Any]] = []
+        for p in files:
+            try:
+                st = p.stat()
+                # Peek first 400 chars for a preview
+                preview = p.read_text(encoding="utf-8", errors="replace")[:400]
+                out.append({
+                    "name": p.name,
+                    "size_bytes": int(st.st_size),
+                    "mtime": datetime.fromtimestamp(st.st_mtime).astimezone().isoformat(timespec="seconds"),
+                    "preview": preview,
+                })
+            except Exception:
+                out.append({"name": p.name})
+        return out
+    except Exception:
+        return []
+
+
+def _build_bolt_snapshot() -> Dict[str, Any]:
+    state = _bolt_controller_state()
+    cmdlog = _bolt_recent_cmdlog(20)
+    hearts = _bolt_recent_hearts(5)
+    boot_status = _derive_bolt_boot_status(state)
+    lineage_status, lineage_reason = _verify_bolt_lineage()
+
+    # Controller status based on seen-ness
+    last_seen = state.get("controller_last_seen_utc", None)
+    
+    # Simple staleness check for "controller status" field (distinct from boot status)
+    controller_status = "offline"
+    if last_seen:
+        ls_dt = _parse_utc_ts(last_seen)
+        if ls_dt:
+            age = (datetime.now(timezone.utc) - ls_dt.astimezone(timezone.utc)).total_seconds()
+            if age < 60:
+                controller_status = "running"
+            elif age < 300:
+                controller_status = "stale"
+
+    receipt = _read_markdown_kv(BOLT_STARTUP_RECEIPT)
+    secretary = _read_json(BOLT_SECRETARY_STATUS)
+    if not isinstance(secretary, dict):
+        secretary = {}
+    backlog_count, quarantine_count = _bolt_aux_counts()
+    adjudication = _build_bolt_adjudication_snapshot(state, receipt, secretary, lineage_status, lineage_reason)
+
+    return {
+        "boot_status": boot_status,
+        "lineage_status": lineage_status,
+        "lineage_reason": lineage_reason,
+        "adjudication": adjudication,
+        "controller_status": controller_status,
+        "last_seen_utc": last_seen,
+        "last_heart_bundle": state.get("last_heart_bundle"),
+        "last_heart_written_utc": state.get("last_heart_written_utc"),
+        "inbox_index": state.get("inbox_index"),
+        "startup_receipt_latest": str(BOLT_STARTUP_RECEIPT) if BOLT_STARTUP_RECEIPT.exists() else "",
+        "startup_session_id": receipt.get("startup_session_id", ""),
+        "startup_runtime_verified_utc": receipt.get("runtime_verified_utc", ""),
+        "startup_receipt_generated_utc": receipt.get("receipt_generated_utc", ""),
+        "secretary_status": secretary.get("secretary_health_status", ""),
+        "secretary_startup_session_id": secretary.get("startup_session_id", ""),
+        "secretary_backlog_count": backlog_count,
+        "secretary_quarantine_count": quarantine_count,
+        "cmdlog": cmdlog,
+        "hearts": hearts,
+        "raw_state": state,
+    }
+
+
+
+def _build_orchestrator_snapshot() -> Dict[str, Any]:
+    latest = _read_json(ORCH_LATEST)
+    lock = _read_json(ORCH_LOCK)
+
+    if not isinstance(latest, dict):
+        latest = {}
+    if not isinstance(lock, dict):
+        lock = {}
+
+    steps = latest.get("steps") if isinstance(latest.get("steps"), list) else []
+    failed_steps = [s for s in steps if isinstance(s, dict) and s.get("status") in ("failed", "missing") and s.get("required")]
+
+    status = latest.get("status") if isinstance(latest.get("status"), str) else "unknown"
+    strict = bool(latest.get("strictCRQualityGate", False))
+
+    return {
+        "status": status,
+        "strict_cr_quality_gate": strict,
+        "started": latest.get("started"),
+        "finished": latest.get("finished"),
+        "failed_step": latest.get("failedStep") or latest.get("error"),
+        "ops_root": latest.get("opsRoot", str(OPS_ROOT)),
+        "step_count": len(steps),
+        "failed_required_count": len(failed_steps),
+        "lock": lock,
+        "steps": steps,
+        "telemetry_path": str(ORCH_LATEST),
+        "lock_path": str(ORCH_LOCK),
+    }
+
+
+def _extract_dailybundle_stdout_value(stdout: str, label: str) -> str:
+    pattern = re.compile(r"^\s*" + re.escape(label) + r"\s*:?\s*(.+?)\s*$", re.IGNORECASE)
+    for line in str(stdout or "").splitlines():
+        match = pattern.match(line)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def _build_dailybundle_app_snapshot() -> Dict[str, Any]:
+    orchestrator = _build_orchestrator_snapshot()
+    steps = orchestrator.get("steps") if isinstance(orchestrator.get("steps"), list) else []
+    build_step = next(
+        (s for s in steps if isinstance(s, dict) and s.get("name") == "OpsCOO_Build_DailyBundle_v1"),
+        {},
+    )
+    scheduler_step = next(
+        (s for s in steps if isinstance(s, dict) and s.get("name") == "OpsCOO_SchedulerIntegrityCheck"),
+        {},
+    )
+    stdout = build_step.get("stdout_tail", "") if isinstance(build_step, dict) else ""
+
+    return {
+        "app": "daily_bundle",
+        "label": "Daily Bundle",
+        "status": build_step.get("status") if isinstance(build_step, dict) else "unknown",
+        "orchestrator_status": orchestrator.get("status", "unknown"),
+        "strict_cr_quality_gate": bool(orchestrator.get("strict_cr_quality_gate", False)),
+        "started": orchestrator.get("started"),
+        "finished": orchestrator.get("finished"),
+        "failed_step": orchestrator.get("failed_step"),
+        "artifact": {
+            "zip": _extract_dailybundle_stdout_value(stdout, "CREATED"),
+            "sha256": _extract_dailybundle_stdout_value(stdout, "ZIP_SHA256"),
+            "manifest_sidecar": _extract_dailybundle_stdout_value(stdout, "MANIFEST (sidecar)"),
+            "manifest_latest": _extract_dailybundle_stdout_value(stdout, "MANIFEST (latest)"),
+            "bootstrap_latest_manifest": _extract_dailybundle_stdout_value(stdout, "BOOTSTRAP_LATEST (manifest)"),
+        },
+        "validation_gates": [
+            {"name": "validate", "status": "todo", "note": "TODO: surface CLI validation evidence after preview install run."},
+            {"name": "seal-check", "status": "todo", "note": "TODO: surface CLI seal-check evidence after preview install run."},
+            {"name": "doctor", "status": "todo", "note": "TODO: surface binary doctor verdict after preview install run."},
+            {"name": "run", "status": "todo", "note": "TODO: surface source-run/cold-machine run evidence."},
+        ],
+        "scheduler_integrity": {
+            "status": scheduler_step.get("status", "not_reported") if isinstance(scheduler_step, dict) else "not_reported",
+            "mode": "audit_only",
+            "task_name": "RetroFuse_OPS_DailyBundle",
+        },
+        "topology": {
+            "default_install_root": r"C:\RetroFuse",
+            "config_path": r"C:\RetroFuse\Config\dailybundle.preview.json",
+            "dailybundle_root": r"C:\RetroFuse\DailyBundle",
+            "runtime_root": r"C:\RetroFuse\Runtime",
+            "logs_root": r"C:\RetroFuse\Logs",
+        },
+        "install_lanes": [
+            {"name": "daily_bundle", "status": "present", "surface": "continuity and governance evidence"},
+            {"name": "future_app_lanes", "status": "reserved", "surface": "TODO: declare per-app install surface before release."},
+        ],
+        "source": {
+            "orchestrator": str(ORCH_LATEST),
+            "release_docs": str(BOLT_ROOT / "Docs" / "DAILY_BUNDLE_TOPOLOGY_SUMMARY_v0.9.md"),
+        },
+    }
+def _build_smc_wrc_live_status() -> Dict[str, Any]:
+    obs_dir = SMC_WRC_OBS_DIR
+    current_status_path = SMC_WRC_CURRENT_STATUS
+
+    def get_latest_file(pattern: str) -> Optional[Path]:
+        if not obs_dir.exists():
+            return None
+        try:
+            files = sorted(obs_dir.glob(pattern), key=_safe_stat_mtime, reverse=True)
+            return files[0] if files else None
+        except Exception:
+            return None
+
+    latest_checkpoint_file = get_latest_file("checkpoint_WRC_*.json")
+    latest_session_file = get_latest_file("session_WRC_*.json")
+
+    current_status = _read_json(current_status_path) or {}
+    checkpoint = _read_json(latest_checkpoint_file) if latest_checkpoint_file else {}
+    session = _read_json(latest_session_file) if latest_session_file else {}
+
+    now = datetime.now(timezone.utc)
+    in_window = False
+    window_name = "NONE"
+    window_range = "NONE"
+    window_end_iso = None
+
+    cw = current_status.get("current_window")
+    if isinstance(cw, dict):
+        in_window = True
+        window_name = cw.get("label", "NONE")
+        window_range = f"{cw.get('start_et', '??')}-{cw.get('end_et', '??')} ET"
+        window_end_iso = cw.get("end_iso")
+
+    checkpoint_age = None
+    checkpoint_ts_str = checkpoint.get("checkpoint_timestamp")
+    if checkpoint_ts_str:
+        cp_dt = _parse_utc_ts(checkpoint_ts_str)
+        if cp_dt:
+            checkpoint_age = int((now - cp_dt.astimezone(timezone.utc)).total_seconds())
+
+    observer_running = bool(current_status.get("observer_running"))
+    if session.get("end_time"):
+        observer_running = False
+
+    sac = checkpoint.get("seed_aware_classifications", {})
+    ccs = checkpoint.get("candidate_classification_summary", {})
+
+    fast_suppressed = sac.get("KNOWN_FAST_SUPPRESSED", 0)
+    ignore_non_media = sac.get("IGNORE_NON_MEDIA_NOISE", 0)
+    player_config = ccs.get("PLAYER_CONFIG_CANDIDATE", 0)
+    unknown_plausible = ccs.get("UNKNOWN_PLAUSIBLE_LINEAR_CANDIDATE", 0)
+    seed_match_fresh = checkpoint.get("seed_aware_match_count", 0)
+
+    resolver_state = current_status.get("resolver_state", "UNKNOWN")
+    direct_source_found = bool(checkpoint.get("direct_source_found"))
+    drm_detected = bool(checkpoint.get("drm_detected"))
+
+    next_safe_action = current_status.get("next_action", "WAIT_FOR_WINDOW")
+
+    # Status Color Logic
+    # GREEN: running, fresh, no false escalation
+    # YELLOW: no active window or only FAST suppressed
+    # ORANGE: active window with stale checkpoint
+    # RED: stopped early, missing session, active window without checkpoint
+    status_color = "YELLOW"
+    
+    if in_window:
+        if observer_running:
+            if checkpoint_age is not None and checkpoint_age <= 300:
+                status_color = "GREEN"
+            elif checkpoint_age is not None and checkpoint_age > 600:
+                status_color = "ORANGE"
+                next_safe_action = "STALE_CHECKPOINT_RESTART_OBSERVER"
+            else:
+                status_color = "YELLOW"
+        else:
+            # Not running in window
+            if direct_source_found:
+                status_color = "GREEN" # Normal completion with result
+            else:
+                # Check for normal end
+                is_normal_end = False
+                if window_end_iso:
+                    win_end_dt = _parse_utc_ts(window_end_iso)
+                    sess_end_str = session.get("end_time")
+                    if win_end_dt and sess_end_str:
+                        sess_end_dt = _parse_utc_ts(sess_end_str)
+                        if sess_end_dt and sess_end_dt >= win_end_dt.replace(second=0).astimezone(timezone.utc):
+                             is_normal_end = True
+                
+                if is_normal_end:
+                    status_color = "YELLOW"
+                else:
+                    status_color = "RED"
+                    next_safe_action = "EARLY_EXIT_NO_CANDIDATE"
+    else:
+        status_color = "YELLOW"
+
+    if not latest_checkpoint_file and in_window:
+        status_color = "RED"
+
+    return {
+        "active_window": in_window,
+        "session_id": checkpoint.get("session_id") or session.get("session_id", "NONE"),
+        "window_name": window_name,
+        "window_range": window_range,
+        "observer_running": observer_running,
+        "latest_checkpoint": latest_checkpoint_file.name if latest_checkpoint_file else "NONE",
+        "checkpoint_age": checkpoint_age,
+        "fast_suppressed_count": fast_suppressed,
+        "ignore_non_media_count": ignore_non_media,
+        "player_config_count": player_config,
+        "unknown_plausible_linear_count": unknown_plausible,
+        "seed_match_fresh_candidate_count": seed_match_fresh,
+        "direct_source_found": direct_source_found,
+        "drm_detected": drm_detected,
+        "resolver_state": resolver_state,
+        "production_mutation": False,
+        "next_safe_action": next_safe_action,
+        "status_color": status_color
+    }
+
+
+def _build_latest_snapshot() -> Dict[str, Any]:
+    snap_path, snap = _find_latest_status_snapshot()
+    if not isinstance(snap, dict):
+        snap = {}
+
+    # Attach ops_signals
+    ops_signals = _read_json(OPS_SIGNALS_JSON)
+    if isinstance(ops_signals, dict):
+        snap["ops_signals"] = ops_signals
+    else:
+        snap.setdefault("ops_signals", {})
+
+    # Core fields
+    snap.setdefault("ops_root", str(OPS_ROOT))
+    snap.setdefault("timestamp", _iso_now_local())
+
+    # Server side telemetry assembly (authoritative)
+    procs = _list_browser_procs()
+    snap["rc1"] = _detect_rc1(procs)
+
+    # Server-side RC2/RC3 detection is authoritative over stale snapshot content.
+    snap["rc2"] = _detect_rc2(procs)
+
+    if not isinstance(snap.get("rc3"), dict):
+        snap["rc3"] = _detect_vivaldi_rc3(procs)
+    else:
+        snap["rc3"].setdefault("status", "unknown")
+
+    snap["renderers"] = _renderer_summary(procs)
+    snap["gpu_pipeline"] = _gpu_pipeline_summary(procs)
+
+    # Disks, safepoints, alpha, notes
+    snap["disks"] = _disk_list()
+    snap["safepoints"] = _safepoint_summaries()
+    snap["safepoint_candidates"] = _safepoint_candidate_summaries()
+    snap["alpha"] = _alpha_summary()
+    if not isinstance(snap.get("notes"), list):
+        snap["notes"] = []
+
+    snap["dashboard_loaded_at"] = datetime.now().isoformat(timespec="seconds")
+
+    # Snapshot provenance (debug)
+    if snap_path is not None:
+        snap["snapshot_source"] = str(snap_path)
+
+    # Derived Bolt status for main view
+    bolt_state = _bolt_controller_state()
+    snap["bolt_boot"] = _derive_bolt_boot_status(bolt_state)
+
+    return snap
+
+
+def _event_file_summary(path: Path) -> Dict[str, Any]:
+    data = _read_json(path)
+    if not isinstance(data, dict):
+        data = {}
+    data.setdefault("filename", path.name)
+    data.setdefault("event_utc", datetime.fromtimestamp(_safe_stat_mtime(path), timezone.utc).isoformat())
+    data.setdefault("event_type", path.stem)
+    data.setdefault("task_id", "")
+    data.setdefault("status", "")
+    data.setdefault("blocker_code", "NONE")
+    data.setdefault("summary", path.name)
+    return data
+
+
+def _latest_event_files(folder: Path, limit: int = 8) -> List[Path]:
+    if not folder.exists():
+        return []
+    try:
+        files = [p for p in folder.glob("*.json") if p.is_file()]
+    except Exception:
+        return []
+    return sorted(files, key=_safe_stat_mtime, reverse=True)[:limit]
+
+
+def _build_worker_events_summary() -> Dict[str, Any]:
+    warnings: List[str] = []
+    latest: Dict[str, List[Dict[str, Any]]] = {}
+    counts: Dict[str, int] = {}
+    for name in ("inbox", "processed", "invalid"):
+        folder = WORKER_EVENTS_DIR / name
+        if not folder.exists():
+            warnings.append(f"Missing worker events folder: {folder}")
+            counts[name] = 0
+            latest[name] = []
+            continue
+        try:
+            files = [p for p in folder.glob("*.json") if p.is_file()]
+        except Exception as exc:
+            warnings.append(f"Failed to scan {folder}: {exc}")
+            files = []
+        counts[name] = len(files)
+        latest[name] = [_event_file_summary(p) for p in sorted(files, key=_safe_stat_mtime, reverse=True)[:8]]
+    return {"ok": True, "counts": counts, "latest": latest, "warnings": warnings}
+
+
+def _build_workers_status() -> List[Dict[str, Any]]:
+    now = datetime.now(timezone.utc)
+    latest_by_worker: Dict[str, Dict[str, Any]] = {}
+    for folder_name in ("inbox", "processed", "invalid"):
+        folder = WORKER_EVENTS_DIR / folder_name
+        for path in _latest_event_files(folder, limit=100):
+            event = _event_file_summary(path)
+            worker_id = str(event.get("worker_id") or event.get("worker") or path.stem)
+            previous = latest_by_worker.get(worker_id)
+            previous_path = Path(str(previous.get("_path", ""))) if previous else None
+            if previous_path and _safe_stat_mtime(previous_path) >= _safe_stat_mtime(path):
+                continue
+            event["_path"] = str(path)
+            event["_folder"] = folder_name
+            latest_by_worker[worker_id] = event
+
+    workers: List[Dict[str, Any]] = []
+    for worker_id, event in latest_by_worker.items():
+        event_dt = _parse_utc_ts(str(event.get("event_utc") or ""))
+        age_seconds: Optional[int] = None
+        if event_dt:
+            age_seconds = max(0, int((now - event_dt.astimezone(timezone.utc)).total_seconds()))
+        status = str(event.get("status") or event.get("event_type") or "UNKNOWN")
+        alive = status not in {"COMPLETED", "FAILED", "ERROR"} and (age_seconds is None or age_seconds < 6 * 60 * 60)
+        blocker = str(event.get("blocker_code") or "NONE")
+        workers.append(
+            {
+                "worker": worker_id,
+                "pid": event.get("pid", ""),
+                "state": "BLOCKED" if blocker != "NONE" else status,
+                "alive": alive,
+                "age_seconds": age_seconds,
+                "timeout_risk": bool(age_seconds is not None and age_seconds > 60 * 60 and alive),
+                "recommended_action": "Review blocker" if blocker != "NONE" else ("No action" if alive else "Review latest terminal event"),
+                "profile": event.get("worker_type", event.get("profile", "")),
+                "role": event.get("role", "Worker"),
+                "task_id": event.get("task_id", ""),
+                "stage": event.get("stage", ""),
+                "current_operation": event.get("current_operation", event.get("summary", "")),
+                "current_path": event.get("_path", ""),
+                "blocker_code": blocker,
+                "blocker_detail": event.get("blocker_detail", ""),
+                "next_actor": event.get("next_actor", "worker"),
+                "evidence_path": event.get("evidence_path", ""),
+            }
+        )
+    workers.sort(key=lambda item: item.get("age_seconds") if item.get("age_seconds") is not None else 10**12)
+    return workers
+
+
+def _build_project_board() -> List[Dict[str, Any]]:
+    data = _read_json(PROJECT_BOARD_CACHE)
+    return data if isinstance(data, list) else []
+
+
+def _build_planes_registry() -> Dict[str, Any]:
+    warnings: List[str] = []
+    planes: List[Dict[str, Any]] = []
+    if not PLANES_REGISTRY_DIR.exists():
+        warnings.append(f"Missing planes registry dir: {PLANES_REGISTRY_DIR}")
+        return {"ok": False, "planes": planes, "warnings": warnings}
+    try:
+        files = sorted(PLANES_REGISTRY_DIR.rglob("registration_candidate.json"), key=_safe_stat_mtime, reverse=True)
+    except Exception as exc:
+        return {"ok": False, "planes": planes, "warnings": [f"Registry scan failed: {exc}"]}
+    for path in files:
+        data = _read_json(path)
+        if not isinstance(data, dict):
+            warnings.append(f"Malformed registration candidate: {path}")
+            continue
+        data.setdefault("source_path", str(path))
+        planes.append(data)
+    return {"ok": True, "planes": planes, "warnings": warnings}
+
+
+INDEX_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>RetroFuse OPS Dashboard</title>
+  <style>
+    :root {
+      --bg: #020617;
+      --border-subtle: #1f2937;
+      --accent: #38bdf8;
+      --accent-soft: rgba(56, 189, 248, 0.12);
+      --text-main: #e5e7eb;
+      --text-muted: #9ca3af;
+      --text-danger: #f97373;
+      --text-warn: #fbbf24;
+      --text-ok: #4ade80;
+      --shadow-soft: 0 18px 60px rgba(15, 23, 42, 0.7);
+      --radius-xl: 18px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top, #020617 0, #020617 40%, #000 100%);
+      color: var(--text-main);
+    }
+    .app-shell { min-height: 100vh; display: flex; flex-direction: column; padding: 24px; gap: 20px; }
+    .header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+    .title { font-size: 1.4rem; font-weight: 600; letter-spacing: 0.03em; display: flex; align-items: center; gap: 10px; }
+    .title-pill {
+      font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.16em;
+      padding: 2px 8px; border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: linear-gradient(135deg, rgba(15, 23, 42, 0.9), rgba(15, 23, 42, 0.4));
+      color: var(--text-muted);
+    }
+    .subtitle { font-size: 0.78rem; color: var(--text-muted); }
+    .meta-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 0.75rem; color: var(--text-muted); }
+    .meta-pill {
+      padding: 4px 10px; border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: rgba(15, 23, 42, 0.9);
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .meta-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+    .meta-label { text-transform: uppercase; letter-spacing: 0.16em; font-size: 0.65rem; color: #6b7280; }
+    .meta-value { color: var(--text-main); }
+    .btn-refresh {
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.4);
+      background: radial-gradient(circle at top left, #0f172a 0, #020617 100%);
+      color: var(--text-main);
+      padding: 4px 10px;
+      font-size: 0.74rem;
+      display: inline-flex; align-items: center; gap: 6px;
+      cursor: pointer;
+      transition: background 0.15s ease, transform 0.08s ease, box-shadow 0.15s ease;
+      box-shadow: 0 0 0 1px rgba(15, 23, 42, 1), 0 10px 30px rgba(15, 23, 42, 0.8);
+    }
+    .btn-refresh:hover { background: radial-gradient(circle at top right, #0b1120 0, #020617 100%); transform: translateY(-1px); box-shadow: 0 12px 40px rgba(15, 23, 42, 0.95); }
+    .btn-refresh:active { transform: translateY(0); box-shadow: 0 4px 18px rgba(15, 23, 42, 0.9); }
+    .module-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+    .module-tab {
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      border-radius: 8px;
+      background: rgba(15, 23, 42, 0.88);
+      color: var(--text-muted);
+      font-size: 0.74rem;
+      padding: 7px 10px;
+      cursor: pointer;
+      min-width: 82px;
+    }
+    .module-tab.active { color: var(--text-main); border-color: rgba(56, 189, 248, 0.65); background: rgba(8, 47, 73, 0.72); }
+    .content-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: stretch; }
+    .content-grid.module-panel { display: none; }
+    .content-grid.module-panel.active { display: grid; }
+    @media (max-width: 1200px) { .content-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 800px) { .app-shell { padding: 12px; } .content-grid { grid-template-columns: minmax(0, 1fr); } }
+    .card {
+      background: radial-gradient(circle at top left, #020617 0, #020617 40%, #000 100%);
+      border-radius: var(--radius-xl);
+      border: 1px solid var(--border-subtle);
+      padding: 14px 14px 12px 14px;
+      box-shadow: var(--shadow-soft);
+      position: relative;
+      overflow: hidden;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .card::before {
+      content: "";
+      position: absolute; inset: 0; pointer-events: none;
+      background: radial-gradient(circle at top, rgba(56, 189, 248, 0.12) 0, transparent 60%),
+                  linear-gradient(135deg, rgba(248, 250, 252, 0.12), transparent 50%);
+      mix-blend-mode: soft-light; opacity: 0.6;
+    }
+    .card-inner { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 8px; height: 100%; }
+    .card-header { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+    .card-title { font-size: 0.95rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-main); }
+    .card-tag { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.14em; padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(148, 163, 184, 0.35); color: var(--text-muted); }
+    .card-body { font-size: 0.78rem; color: var(--text-main); display: flex; flex-direction: column; gap: 6px; }
+    .card-row { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+    .label { font-size: 0.75rem; color: var(--text-muted); }
+    .value { font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+    .value-ok { color: var(--text-ok); }
+    .value-warn { color: var(--text-warn); }
+    .value-bad { color: var(--text-danger); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.72rem; white-space: pre-wrap; word-break: break-all; }
+    .small { font-size: 0.7rem; color: var(--text-muted); }
+    .list { display: flex; flex-direction: column; gap: 2px; max-height: 140px; overflow-y: auto; padding-right: 4px; }
+    .list-item { font-size: 0.74rem; color: var(--text-main); border-radius: 10px; padding: 4px 6px; background: rgba(15, 23, 42, 0.9); border: 1px solid rgba(31, 41, 55, 0.9); }
+    .list-item strong { color: var(--text-muted); font-weight: 500; }
+    .footer-note { margin-top: 4px; font-size: 0.68rem; color: var(--text-muted); display: flex; justify-content: space-between; gap: 6px; align-items: center; }
+    .pill-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(148, 163, 184, 0.35); background: rgba(15, 23, 42, 0.9); font-size: 0.7rem; color: var(--text-main); }
+    .pill-dot { width: 7px; height: 7px; border-radius: 999px; }
+    .pill-dot.ok { background: var(--text-ok); }
+    .pill-dot.warn { background: var(--text-warn); }
+    .pill-dot.bad { background: var(--text-danger); }
+    details { border-radius: 10px; border: 1px solid rgba(31, 41, 55, 0.95); background: radial-gradient(circle at top left, #020617 0, #020617 40%, #020617 100%); padding: 5px 6px; }
+    summary { cursor: pointer; list-style: none; font-size: 0.76rem; color: var(--text-main); display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+    summary::-webkit-details-marker { display: none; }
+    .summary-label { display: inline-flex; align-items: center; gap: 6px; }
+    .summary-chevron { font-size: 0.6rem; color: var(--text-muted); }
+    details[open] .summary-chevron { transform: rotate(90deg); }
+    .details-body { margin-top: 4px; border-top: 1px solid rgba(31, 41, 55, 0.8); padding-top: 4px; display: flex; flex-direction: column; gap: 4px; }
+  
+    /* P1 Visual Refinement */
+    .fleet-bar { display: flex; height: 28px; border-radius: 14px; overflow: hidden; margin: 8px 0; border: 1px solid rgba(148,163,184,0.25); }
+    .fleet-bar-segment { display: flex; align-items: center; justify-content: center; font-size: 0.6rem; font-weight: 600; letter-spacing: 0.05em; transition: flex 0.3s ease; min-width: 0; }
+    .fleet-bar-segment.ready { background: linear-gradient(135deg, #166534, #22c55e); color: #dcfce7; }
+    .fleet-bar-segment.risk { background: linear-gradient(135deg, #854d0e, #eab308); color: #fef9c3; }
+    .fleet-bar-segment.stale { background: linear-gradient(135deg, #713f12, #f59e0b); color: #fef3c7; }
+    .fleet-bar-segment.blocked { background: linear-gradient(135deg, #7f1d1d, #ef4444); color: #fecaca; }
+    .fleet-bar-segment.unknown { background: linear-gradient(135deg, #1e293b, #475569); color: #cbd5e1; }
+    .fleet-bar-segment:hover { flex: 2 1 0; }
+    .mode-strip { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-radius: 10px; border: 1px solid rgba(148,163,184,0.25); background: rgba(15,23,42,0.6); flex-wrap: wrap; }
+    .mode-strip .mode-icon { font-size: 1.1rem; }
+    .mode-strip .mode-name { font-weight: 600; font-size: 0.85rem; }
+    .mode-strip .mode-tag { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(148,163,184,0.35); }
+    .mode-strip .mode-stat { font-size: 0.75rem; display: flex; align-items: center; gap: 4px; }
+    .mode-switch { display: inline-flex; border-radius: 999px; border: 1px solid rgba(148,163,184,0.3); overflow: hidden; background: rgba(15,23,42,0.8); }
+    .mode-switch-btn { padding: 6px 14px; font-size: 0.72rem; border: none; background: transparent; color: var(--text-muted); cursor: pointer; transition: all 0.2s ease; letter-spacing: 0.03em; }
+    .mode-switch-btn.active { background: rgba(56,189,248,0.2); color: var(--accent); }
+    .mode-switch-btn:first-child { border-radius: 999px 0 0 999px; }
+    .mode-switch-btn:last-child { border-radius: 0 999px 999px 0; }
+    .mode-switch-btn:hover:not(.active) { background: rgba(56,189,248,0.08); }
+    .model-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+    .model-card { border-radius: 12px; border: 1px solid rgba(148,163,184,0.2); background: rgba(15,23,42,0.7); padding: 10px 12px; transition: border-color 0.2s ease, box-shadow 0.2s ease; animation: cardFadeIn 0.3s ease both; }
+    .model-card:hover { border-color: rgba(56,189,248,0.4); box-shadow: 0 0 20px rgba(56,189,248,0.06); }
+    .model-card .card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .model-card .card-head .alias { font-weight: 600; font-size: 0.82rem; }
+    .model-card .card-head .desc { font-size: 0.68rem; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .model-card .card-body-row { display: flex; gap: 8px; flex-wrap: wrap; font-size: 0.7rem; }
+    .model-card .card-body-row .stat { display: flex; align-items: center; gap: 3px; }
+    .model-card .risk-pills { display: flex; gap: 3px; flex-wrap: wrap; margin-top: 4px; }
+    .model-card .risk-pill { font-size: 0.55rem; padding: 1px 5px; border-radius: 4px; font-weight: 600; letter-spacing: 0.05em; }
+    .model-card .risk-pill.ctx { background: rgba(239,68,68,0.25); color: #fca5a5; }
+    .model-card .risk-pill.temp { background: rgba(249,115,22,0.25); color: #fdba74; }
+    .model-card .risk-pill.output { background: rgba(234,179,8,0.25); color: #fde68a; }
+    .model-card .risk-pill.timeout { background: rgba(168,85,247,0.25); color: #d8b4fe; }
+    .model-card .risk-pill.profile { background: rgba(59,130,246,0.25); color: #93c5fd; }
+    .model-card .risk-pill.route { background: rgba(236,72,153,0.25); color: #f9a8d4; }
+    @keyframes healthPulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.2); opacity: 0.8; } }
+    @keyframes healthBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    @keyframes cardFadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    .health-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+    .health-dot.ok { background: #4ade80; animation: healthPulse 2s ease-in-out infinite; }
+    .health-dot.warn { background: #fbbf24; animation: healthBlink 3s ease-in-out infinite; }
+    .health-dot.bad { background: #f97373; }
+    .health-dot.neutral { background: #6b7280; }
+    .risk-heat-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+    .risk-heat-cell { border-radius: 8px; padding: 6px 4px; text-align: center; border: 1px solid rgba(148,163,184,0.15); }
+    .risk-heat-cell .rh-label { font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); }
+    .risk-heat-cell .rh-value { font-size: 1rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .risk-heat-cell.severe { background: rgba(239,68,68,0.2); border-color: rgba(239,68,68,0.3); }
+    .risk-heat-cell.high { background: rgba(249,115,22,0.2); border-color: rgba(249,115,22,0.3); }
+    .risk-heat-cell.medium { background: rgba(234,179,8,0.15); border-color: rgba(234,179,8,0.25); }
+    .risk-heat-cell.low { background: rgba(59,130,246,0.1); border-color: rgba(59,130,246,0.2); }
+    .risk-heat-cell.none { background: rgba(74,222,128,0.08); border-color: rgba(74,222,128,0.15); }
+    .route-pipeline { display: flex; gap: 4px; align-items: stretch; }
+    .route-stage { flex: 1; border-radius: 8px; padding: 8px 6px; text-align: center; border: 1px solid rgba(148,163,184,0.2); display: flex; flex-direction: column; align-items: center; gap: 2px; transition: flex 0.3s ease; min-width: 0; }
+    .route-stage:hover { flex: 1.5; }
+    .route-stage .rs-label { font-size: 0.55rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); white-space: nowrap; }
+    .route-stage .rs-count { font-size: 1.2rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .route-stage.verified { background: rgba(22,163,74,0.15); border-color: rgba(22,163,74,0.3); }
+    .route-stage.recommended { background: rgba(234,179,8,0.12); border-color: rgba(234,179,8,0.25); }
+    .route-stage.requires-reason { background: rgba(249,115,22,0.12); border-color: rgba(249,115,22,0.25); }
+    .route-stage.blocked { background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.25); }
+    .route-stage.idle { background: rgba(107,114,128,0.1); border-color: rgba(107,114,128,0.2); }
+    .group-header { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted); padding: 8px 0 4px 0; border-bottom: 1px solid rgba(148,163,184,0.15); margin-top: 8px; }
+    .asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+    .asset-badge { border-radius: 10px; border: 1px solid rgba(148,163,184,0.15); padding: 8px 10px; background: rgba(15,23,42,0.5); }
+    .asset-badge .ab-provider { font-size: 0.78rem; font-weight: 600; }
+    .asset-badge .ab-meta { display: flex; gap: 6px; flex-wrap: wrap; font-size: 0.65rem; margin-top: 4px; }
+    .asset-badge .ab-meta span { padding: 1px 6px; border-radius: 4px; background: rgba(15,23,42,0.8); }
+    .home-label { font-size: 0.7rem; padding: 2px 8px; border-radius: 999px; font-weight: 500; }
+    .home-label.available { background: rgba(74,222,128,0.15); color: #86efac; }
+    .home-label.needs-tuning { background: rgba(234,179,8,0.15); color: #fde68a; }
+    .home-label.not-available { background: rgba(239,68,68,0.15); color: #fca5a5; }
+    .home-label.unchecked { background: rgba(107,114,128,0.15); color: #cbd5e1; }
+    @media (max-width: 900px) { .model-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); } .risk-heat-grid { grid-template-columns: repeat(4, 1fr); } .route-pipeline { flex-wrap: wrap; } }
+    @media (max-width: 600px) { .model-grid { grid-template-columns: 1fr; } .risk-heat-grid { grid-template-columns: repeat(2, 1fr); } }
+    @media (prefers-reduced-motion: reduce) { .health-dot.ok, .health-dot.warn { animation: none; } .model-card { animation: none; } }
+  
+  /* Dashboard Settings Drawer */
+  .settings-overlay {
+    position: fixed; inset: 0; z-index: 999;
+    background: rgba(2, 6, 23, 0.7);
+    backdrop-filter: blur(4px);
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.25s ease;
+  }
+  .settings-overlay.open { opacity: 1; pointer-events: auto; }
+  .settings-drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; z-index: 1000;
+    width: 420px; max-width: 92vw;
+    background: radial-gradient(circle at top left, #0f172a 0, #020617 100%);
+    border-left: 1px solid rgba(148, 163, 184, 0.25);
+    box-shadow: -8px 0 40px rgba(0, 0, 0, 0.6);
+    transform: translateX(100%);
+    transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .settings-drawer.open { transform: translateX(0); }
+  .settings-drawer-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 18px; border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+    flex-shrink: 0;
+  }
+  .settings-drawer-header .sd-title {
+    font-size: 1rem; font-weight: 600; letter-spacing: 0.04em;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .settings-drawer-header .sd-close {
+    width: 32px; height: 32px; border-radius: 8px;
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    background: rgba(15, 23, 42, 0.9);
+    color: var(--text-muted); font-size: 1.1rem;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s ease;
+  }
+  .settings-drawer-header .sd-close:hover {
+    background: rgba(239, 68, 68, 0.2); border-color: rgba(239, 68, 68, 0.4);
+    color: #fca5a5;
+  }
+  .settings-drawer-body {
+    flex: 1; overflow-y: auto; padding: 12px 18px 24px;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+  .settings-section { display: flex; flex-direction: column; gap: 8px; }
+  .settings-section-header {
+    font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.1em; color: var(--text-muted);
+    padding-bottom: 6px; border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .settings-section-header .ss-badge {
+    font-size: 0.6rem; padding: 2px 7px; border-radius: 999px;
+    background: rgba(56, 189, 248, 0.15); color: var(--accent);
+    letter-spacing: 0.08em;
+  }
+  .settings-section-header .ss-badge.future {
+    background: rgba(107, 114, 128, 0.2); color: #9ca3af;
+  }
+  .settings-section-note {
+    font-size: 0.68rem; color: #6b7280; line-height: 1.4;
+    padding: 6px 8px; border-radius: 6px;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(148, 163, 184, 0.1);
+  }
+  .wrapper-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.12);
+    background: rgba(15, 23, 42, 0.5);
+    transition: border-color 0.15s ease, background 0.15s ease;
+    cursor: default;
+  }
+  .wrapper-row:hover { border-color: rgba(148, 163, 184, 0.3); background: rgba(15, 23, 42, 0.7); }
+  .wrapper-row .wr-checkbox {
+    width: 18px; height: 18px; border-radius: 4px;
+    border: 1px solid rgba(148, 163, 184, 0.4);
+    background: rgba(15, 23, 42, 0.8);
+    cursor: pointer; flex-shrink: 0;
+    appearance: none; -webkit-appearance: none;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s ease;
+  }
+  .wrapper-row .wr-checkbox:checked {
+    background: rgba(56, 189, 248, 0.25);
+    border-color: var(--accent);
+  }
+  .wrapper-row .wr-checkbox:checked::after {
+    content: "✓"; color: var(--accent); font-size: 0.7rem; font-weight: 700;
+  }
+  .wrapper-row .wr-icon {
+    width: 28px; height: 28px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.65rem; font-weight: 700; letter-spacing: 0.02em;
+    flex-shrink: 0;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+  }
+  .wrapper-row .wr-icon.preferred { background: rgba(56, 189, 248, 0.2); color: var(--accent); border-color: rgba(56, 189, 248, 0.3); }
+  .wrapper-row .wr-icon.supported { background: rgba(74, 222, 128, 0.15); color: #86efac; border-color: rgba(74, 222, 128, 0.25); }
+  .wrapper-row .wr-icon.optional { background: rgba(107, 114, 128, 0.15); color: #9ca3af; border-color: rgba(107, 114, 128, 0.2); }
+  .wrapper-row .wr-icon.custom { background: rgba(168, 85, 247, 0.15); color: #d8b4fe; border-color: rgba(168, 85, 247, 0.25); }
+  .wrapper-row .wr-info { flex: 1; min-width: 0; }
+  .wrapper-row .wr-info .wr-name { font-size: 0.78rem; font-weight: 500; color: var(--text-main); }
+  .wrapper-row .wr-info .wr-meta { font-size: 0.65rem; color: var(--text-muted); margin-top: 1px; }
+  .wrapper-row .wr-chip {
+    font-size: 0.55rem; padding: 2px 7px; border-radius: 999px;
+    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;
+    flex-shrink: 0;
+  }
+  .wrapper-row .wr-chip.configured { background: rgba(74, 222, 128, 0.15); color: #86efac; }
+  .wrapper-row .wr-chip.unknown { background: rgba(234, 179, 8, 0.15); color: #fde68a; }
+  .wrapper-row .wr-chip.deferred { background: rgba(107, 114, 128, 0.15); color: #9ca3af; }
+  .wrapper-row .wr-chip.not-configured { background: rgba(107, 114, 128, 0.1); color: #6b7280; }
+  .wrapper-row .wr-chip.placeholder { background: rgba(168, 85, 247, 0.12); color: #d8b4fe; }
+  .future-section-placeholder {
+    padding: 10px 12px; border-radius: 10px;
+    border: 1px dashed rgba(148, 163, 184, 0.15);
+    background: rgba(15, 23, 42, 0.3);
+    font-size: 0.72rem; color: #6b7280;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .future-section-placeholder .fsp-icon { font-size: 0.85rem; opacity: 0.5; }
+  .btn-gear {
+    width: 32px; height: 32px; border-radius: 8px;
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    background: rgba(15, 23, 42, 0.8);
+    color: var(--text-muted); font-size: 1rem;
+    cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+    transition: all 0.15s ease;
+  }
+  .btn-gear:hover {
+    border-color: rgba(56, 189, 248, 0.5);
+    color: var(--accent);
+    background: rgba(56, 189, 248, 0.08);
+  }
+</style></head>
+<body>
+  <div class="app-shell">
+    <header class="header">
+      <div>
+        <div class="title">
+          RetroFuse OPS Dashboard
+          <span class="title-pill">OPS SPINE - v1.7 - LINEAGE GATE</span>
+        </div>
+        <div class="subtitle">RFCC health, browser telemetry, SAFEPOINT engine, and Alpha capture - rendered locally from DailyCheck snapshots.</div>
+      </div>
+      <div class="meta-bar">
+        <div class="meta-pill">
+          <span class="meta-dot"></span>
+          <span class="meta-label">Mode</span>
+          <span class="meta-value">Operations - Gen 7</span>
+        </div>
+        <div class="meta-pill" id="bolt-boot-pill">
+          <span class="meta-dot"></span>
+          <span class="meta-label">Bolt Status</span>
+          <span class="meta-value" id="bolt-boot-pill-value">awaiting data</span>
+        </div>
+        <button class="btn-gear" onclick="toggleSettings()" title="Dashboard Settings">⚙</button>
+      <button class="btn-refresh" onclick="loadSnapshot(true)">Refresh snapshot</button>
+      </div>
+    </header>
+
+    <nav class="module-tabs" aria-label="App modules">
+      <button class="module-tab active" data-module-tab="ops" onclick="showModule('ops')">OPS</button>
+      <button class="module-tab" data-module-tab="dailybundle" onclick="showModule('dailybundle')">Daily Bundle</button>
+      <button class="module-tab" data-module-tab="bolt" onclick="showModule('bolt')">Bolt</button>
+      <button class="module-tab" data-module-tab="safepoint" onclick="showModule('safepoint')">SAFEPOINT</button>
+      <button class="module-tab" data-module-tab="alpha" onclick="showModule('alpha')">Alpha</button>
+      <button class="module-tab" data-module-tab="models" onclick="showModule('models')">Models</button>
+    </nav>
+
+    <main class="content-grid module-panel active" data-module-panel="ops">
+      <section class="card">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Snapshot & Overview</div>
+            <div class="card-tag">RFCC - STATUS</div>
+          </div>
+          <div class="card-body" id="snapshot-card">
+            <div class="small">Waiting for latest DailyCheck JSON...</div>
+          </div>
+          <div class="footer-note">
+            <span id="snapshot-meta">No snapshot loaded.</span>
+            <span class="small">Source: RetroFuse DailyCheck</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Browser Process Telemetry</div>
+            <div class="card-tag">RC1 - RC2 - RC3 - GPU</div>
+          </div>
+          <div class="card-body" id="telemetry-card">
+            <div class="small">RC1/RC2/RC3 status, renderers, and GPU pipeline from live process scan.</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Telemetry is read-only. No control path exposed.</span>
+            <span class="small">Data source: local process scan + DailyCheck.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Disks & Storage</div>
+            <div class="card-tag">C - D - E - Z</div>
+          </div>
+          <div class="card-body" id="disks-card"><div class="small">Waiting for disk data...</div></div>
+          <div class="footer-note"><span class="small">Used/free in bytes.</span></div>
+        </div>
+      </section>
+
+            <section class="card">
+              <div class="card-inner">
+                <div class="card-header">
+                  <div class="card-title">SAFEPOINT / Candidate Review</div>
+                  <div class="card-tag">ARCHIVE - REVIEW</div>
+                </div>
+                <div class="card-body" id="safepoints-card"><div class="small">No SAFEPOINT data loaded yet.</div></div>
+                <div class="footer-note"><span class="small">Real SAFEPOINT proof stays separate from candidate review packets.</span></div>
+              </div>
+            </section>
+
+      <section class="card">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Alpha Wakeflow Capture</div>
+            <div class="card-tag">ALPHA - RAW</div>
+          </div>
+          <div class="card-body" id="alpha-card">
+            <div class="small">Tracking Alpha\\Raw folder for recent notes and captures.</div>
+            <div class="small" id="alpha-details">Waiting for Alpha folder data...</div>
+          </div>
+          <div class="footer-note"><span class="small">Future: direct links to latest alpha notes.</span></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Ops Notes & Meta</div>
+            <div class="card-tag">DAILYCHECK - NOTES</div>
+          </div>
+          <div class="card-body" id="notes-card"><div class="small">No notes recorded in this snapshot.</div></div>
+          <div class="footer-note"><span class="small">Notes are optional annotations from the DailyCheck run.</span></div>
+        </div>
+      </section>
+
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">OPS COO Orchestrator</div>
+            <div class="card-tag">PY CONTROL PLANE - STRICT GATE</div>
+          </div>
+          <div class="card-body" id="orchestrator-card">
+            <div class="small">Loading orchestrator telemetry...</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Source: OpsCOO_Daily_Orchestrator_Latest.json + lock file.</span>
+            <span class="small">Auto-refreshes every 10s.</span>
+          </div>
+        </div>
+      </section>
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">SMC / WRC Live Observer</div>
+            <div class="card-tag">WRC WINDOW - SYMPHONY</div>
+          </div>
+          <div class="card-body" id="smc-wrc-live-status-card">
+            <div class="small">Loading WRC live status...</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Live WRC observation metrics and suppression stats.</span>
+            <span class="small">Auto-refreshes every 10s.</span>
+          </div>
+        </div>
+      </section>
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Bolt RC2 Controller</div>
+            <div class="card-tag">HEARTS - LINEAGE - CMDLOG</div>
+          </div>
+          <div class="card-body" id="bolt-card">
+            <div class="small">Loading Bolt RC2 data...</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Live reads from controller_state.json, cmdlog.jsonl, and HeartBundles.</span>
+            <span class="small">Auto-refreshes every 10s.</span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <main class="content-grid module-panel" data-module-panel="dailybundle">
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Daily Bundle Install Surface</div>
+            <div class="card-tag">v0.9 - PACKAGE LANE</div>
+          </div>
+          <div class="card-body" id="dailybundle-card">
+            <div class="small">Loading Daily Bundle app surface...</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Source: OPS COO build step and v0.9 topology map.</span>
+            <span class="small">Auto-refreshes every 10s.</span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <main class="content-grid module-panel" data-module-panel="bolt">
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Bolt RC2 Controller</div>
+            <div class="card-tag">HEARTS - LINEAGE - CMDLOG</div>
+          </div>
+          <div class="card-body" id="bolt-card-module">
+            <div class="small">Bolt details are mirrored in the OPS module for this preview.</div>
+          </div>
+          <div class="footer-note"><span class="small">Dedicated Bolt controls remain in the OPS surface.</span></div>
+        </div>
+      </section>
+    </main>
+
+    <main class="content-grid module-panel" data-module-panel="safepoint">
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">SAFEPOINT Module</div>
+            <div class="card-tag">RESERVED SURFACE</div>
+          </div>
+          <div class="card-body"><div class="small">SAFEPOINT summary remains in OPS; install-lane packaging is excluded from Daily Bundle v0.9.</div></div>
+        </div>
+      </section>
+    </main>
+
+    <main class="content-grid module-panel" data-module-panel="alpha">
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Alpha Module</div>
+            <div class="card-tag">RESERVED SURFACE</div>
+          </div>
+          <div class="card-body"><div class="small">Alpha capture remains in OPS; future app lanes should declare package scope before release.</div></div>
+        </div>
+      </section>
+    </main>
+    <main class="content-grid module-panel" data-module-panel="models">
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Fleet Health</div>
+            <div class="card-tag">v0.2 - P1 REFINEMENT</div>
+            <div class="mode-switch" id="mode-switch">
+              <button class="mode-switch-btn active" data-mode="home" onclick="switchMode('home')">Home Mode</button>
+              <button class="mode-switch-btn" data-mode="business" onclick="switchMode('business')">Business Mode</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div id="fleet-health-bar"><div class="small">Loading fleet health...</div></div>
+            <div id="mode-strip" class="mode-strip" style="margin-top:8px;">
+              <div class="small">Loading mode...</div>
+            </div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Source: Bolt_ModelAliases.json + Continuation Packet v0.1</span>
+            <span class="small">Read-only. Edit requires explicit apply action.</span>
+          </div>
+        </div>
+      </section>
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Model Lanes</div>
+            <div class="card-tag" id="models-count-tag">28 MODELS</div>
+          </div>
+          <div class="card-body" id="models-lanes-card">
+            <div class="small">Loading model lanes...</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Grouped by route tier. Click a card to expand settings and evidence.</span>
+          </div>
+        </div>
+      </section>
+      <section class="card" style="grid-column: 1 / -1;" id="models-settings-section">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Settings Provenance</div>
+            <div class="card-tag">EXPLICIT / CONFIG / DEFAULT</div>
+          </div>
+          <div class="card-body" id="models-settings-card">
+            <div class="small">Loading settings...</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Red-highlighted values are at Ollama defaults. May be unsafe for governed lanes.</span>
+          </div>
+        </div>
+      </section>
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Route Flow</div>
+            <div class="card-tag">VERIFIED &rarr; RECOMMENDED &rarr; REASON &rarr; BLOCKED &rarr; IDLE</div>
+          </div>
+          <div class="card-body" id="models-routeflow-card">
+            <div class="small">Loading route flow...</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Visual recommendation only. Does not imply live route execution.</span>
+          </div>
+        </div>
+      </section>
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Risk Heat</div>
+            <div class="card-tag">CTX &middot; TEMP &middot; OUTPUT &middot; TIMEOUT &middot; PROFILE &middot; ROUTE</div>
+          </div>
+          <div class="card-body" id="models-riskheat-card">
+            <div class="small">Loading risk summary...</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Risk badges highlight unsafe default settings per model lane.</span>
+          </div>
+        </div>
+      </section>
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Edit Queue</div>
+            <div class="card-tag">GOVERNED EDITS &middot; RECEIPTS</div>
+          </div>
+          <div class="card-body" id="models-edits-card">
+            <div class="small">Loading edit receipts...</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">All edits produce receipt/diff/rollback info. No silent mutation.</span>
+          </div>
+        </div>
+      </section>
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Provider Assets</div>
+            <div class="card-tag">CONFIGURED &middot; OPERATOR_REPORTED</div>
+          </div>
+          <div class="card-body" id="models-assets-card">
+            <div class="small">Loading assets...</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Confidence source shown per provider. Pricing/quota are operator-reported, not product promises.</span>
+          </div>
+        </div>
+      </section>
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Wrapper Registry</div>
+            <div class="card-tag">ACTIVE WRAPPERS &middot; CATALOG</div>
+          </div>
+          <div class="card-body" id="models-wrappers-card">
+            <div class="small">Loading wrapper registry...</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Active wrappers shown on model cards. Catalog wrappers visible in gear drawer. Launch is a future feature.</span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+  </div>
+
+<script>
+  function shorten(str, max) {
+    if (!str || typeof str !== "string") return "";
+    if (str.length <= max) return str;
+    return str.slice(0, max - 3) + "...";
+  }
+
+  function fmtBytes(n) {
+    if (typeof n !== "number" || isNaN(n)) return "n/a";
+    const units = ["B","KB","MB","GB","TB","PB"];
+    let u = 0, v = n;
+    while (v >= 1024 && u < units.length - 1) { v /= 1024; u++; }
+    return v.toFixed(1) + " " + units[u];
+  }
+
+  function stripAnsi(value) {
+    const s = String(value ?? "");
+    return s.replace(/\\x1b\\[[0-9;]*[A-Za-z]/g, "");
+  }
+
+  function escapeHtml(value) {
+    const s = stripAnsi(value);
+    return s.replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[c]));
+  }
+
+  function showModule(name) {
+    document.querySelectorAll("[data-module-tab]").forEach((el) => {
+      el.classList.toggle("active", el.getAttribute("data-module-tab") === name);
+    });
+    document.querySelectorAll("[data-module-panel]").forEach((el) => {
+      el.classList.toggle("active", el.getAttribute("data-module-panel") === name);
+    });
+  }
+
+  function safeGet(obj, path, fallback = null) {
+    try {
+      return path.split(".").reduce((o, key) => (o && key in o ? o[key] : undefined), obj) ?? fallback;
+    } catch (e) {
+      return fallback;
+    }
+  }
+
+  function renderOpsSignalsPills(opsSignals) {
+    const ops = (opsSignals && typeof opsSignals === "object") ? opsSignals : {};
+    const order = [
+      ["DailyCheck", "DailyCheck"],
+      ["CodexGate", "CodexGate"],
+      ["DailyCheckMirror", "DailyCheckMirror"],
+      ["PublisherWipeGuard", "PublisherWipeGuard"],
+    ];
+
+    function dotClass(v) {
+      const s = String(v ?? "").toLowerCase();
+      if (!s) return "warn";
+      if (["success","clean","ok","true","pass","passed"].includes(s)) return "ok";
+      if (["fail","failed","bad","error","dirty"].includes(s)) return "bad";
+      return "warn";
+    }
+
+    const pills = order.map(([label, key]) => {
+      const v = ops[key];
+      const cls = dotClass(v);
+      const title = (v === undefined || v === null || v === "") ? "unknown" : String(v);
+      return `<span class="pill" title="${escapeHtml(title)}"><span class="pill-dot ${cls}"></span>${escapeHtml(label)}</span>`;
+    });
+
+    return `<div class="pill-row">${pills.join("")}</div>`;
+  }
+
+  async function loadSnapshot(showSpinner) {
+    const snapshotCard = document.getElementById("snapshot-card");
+    const snapshotMeta = document.getElementById("snapshot-meta");
+    if (showSpinner && snapshotCard) {
+      snapshotCard.innerHTML = '<div class="small">Refreshing snapshot...</div>';
+      if (snapshotMeta) snapshotMeta.textContent = "Refreshing...";
+    }
+
+    let snapshot;
+    try {
+      const response = await fetch("/api/latest?nocache=" + Date.now());
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      snapshot = await response.json();
+    } catch (err) {
+      if (snapshotCard) {
+        snapshotCard.innerHTML = '<div class="small" style="color:#f97373;">Failed to load snapshot: ' +
+          escapeHtml(err && err.message ? err.message : "Unknown error") + "</div>";
+      }
+      if (snapshotMeta) snapshotMeta.textContent = "Snapshot load failed.";
+      return;
+    }
+
+    renderSnapshot(snapshot);
+    renderTelemetry(snapshot);
+    renderDisks(snapshot);
+    renderSafepoints(snapshot);
+    renderAlpha(snapshot);
+    renderNotes(snapshot);
+  }
+
+  function statusClass(s) {
+    const v = (s || "unknown").toString().toLowerCase();
+    if (v === "running" || v === "ready") return "value-ok";
+    if (v === "not_running" || v === "stale" || v === "booting") return "value-warn";
+    return "value-bad";
+  }
+
+  function renderSnapshot(snapshot) {
+    const snapshotCard = document.getElementById("snapshot-card");
+    const snapshotMeta = document.getElementById("snapshot-meta");
+    if (!snapshotCard) return;
+
+    const tsRaw = snapshot.timestamp || "unknown";
+    const ts = (tsRaw !== "unknown") ? new Date(tsRaw).toLocaleString("en-US", { timeZone: "America/New_York" }) : "unknown";
+
+    const opsRoot = snapshot.ops_root || "(not set)";
+    const src = snapshot.snapshot_source || "(auto)";
+
+    const rc1Status = safeGet(snapshot, "rc1.status", "unknown");
+    const rc2Status = safeGet(snapshot, "rc2.status", "unknown");
+    const rc3Status = safeGet(snapshot, "rc3.status", "unknown");
+    const boltBoot = snapshot.bolt_boot || "unknown";
+
+    const bootPill = document.getElementById("bolt-boot-pill-value");
+    if (bootPill) {
+      bootPill.textContent = boltBoot;
+      bootPill.className = "meta-value " + boltStatusClass(boltBoot);
+    }
+
+    snapshotCard.innerHTML = `
+      <div class="card-row"><div><div class="label">Snapshot timestamp</div><div class="value">${escapeHtml(ts)}</div></div></div>
+      <div class="card-row"><div><div class="label">OPS root</div><div class="value mono">${escapeHtml(opsRoot)}</div></div></div>
+      <div class="card-row">
+        <div><div class="label">RC1 (Bolt RC1)</div><div class="value ${statusClass(rc1Status)}">${escapeHtml(rc1Status)}</div></div>
+        <div><div class="label">RC2 (Bolt RC2)</div><div class="value ${statusClass(rc2Status)}">${escapeHtml(rc2Status)}</div></div>
+        <div><div class="label">RC3 (Bolt RC3)</div><div class="value ${statusClass(rc3Status)}">${escapeHtml(rc3Status)}</div></div>
+      </div>
+      <div class="card-row">
+        <div><div class="label">Bolt Status (Data)</div><div class="value ${boltStatusClass(boltBoot)}">${escapeHtml(boltBoot)}</div></div>
+        <div><div class="label">OPS Signals</div><div class="value">${renderOpsSignalsPills(snapshot.ops_signals)}</div></div>
+      </div>
+      <div class="card-row"><div><div class="label">Snapshot source</div><div class="value mono">${escapeHtml(src)}</div></div></div>
+    `;
+
+    if (snapshotMeta) snapshotMeta.textContent = "Last snapshot loaded.";
+  }
+
+  function pidArray(v) {
+    if (Array.isArray(v)) return v;
+    if (v === null || v === undefined || v === "") return [];
+    return [v];
+  }
+
+  function pidList(arr) {
+    const a = pidArray(arr);
+    if (!a.length) return '<div class="small">No PIDs recorded.</div>';
+    return `<div class="list">${a.map(p => `<span class="list-item mono">PID: ${escapeHtml(p)}</span>`).join("")}</div>`;
+  }
+
+  function cmdArray(v) {
+    if (Array.isArray(v)) return v;
+    if (!v) return [];
+    return [v];
+  }
+
+  function cmdList(arr) {
+    const a = cmdArray(arr);
+    if (!a.length) return '<div class="small">No command lines recorded.</div>';
+    return `<div class="list">${a.map((c,i) => `<div class="list-item mono"><strong>Cmd ${i+1}:</strong> ${escapeHtml(shorten(String(c), 520))}</div>`).join("")}</div>`;
+  }
+
+  function renderTelemetry(snapshot) {
+    const card = document.getElementById("telemetry-card");
+    if (!card) return;
+
+    const rc1 = snapshot.rc1 || {};
+    const rc2 = snapshot.rc2 || {};
+    const rc3 = snapshot.rc3 || {};
+    const renderers = snapshot.renderers || {};
+    const gpu = snapshot.gpu_pipeline || {};
+
+    const rc1Status = safeGet(snapshot, "rc1.status", "unknown");
+    const rc2Status = safeGet(snapshot, "rc2.status", "unknown");
+    const rc3Status = safeGet(snapshot, "rc3.status", "unknown");
+
+    const rc1Pids = pidArray(rc1.process_id);
+    const rc2Pids = pidArray(rc2.process_id);
+    const rc3Pids = pidArray(rc3.process_id);
+
+    const rc1Cmds = cmdArray(rc1.command_line);
+    const rc2Cmds = cmdArray(rc2.command_line);
+    const rc3Cmds = cmdArray(rc3.command_line);
+
+    const rendererCount = safeGet(snapshot, "renderers.renderer_count", 0);
+    const rendererPids = pidArray(renderers.renderer_pids);
+
+    const gpuCount = safeGet(snapshot, "gpu_pipeline.gpu_process_count", 0);
+    const gpuCmd = safeGet(snapshot, "gpu_pipeline.sample_gpu_cmd", null);
+
+    const rc2Detectable = safeGet(snapshot, "rc2.detectable", false);
+    const rc2Note = safeGet(snapshot, "rc2.expected.note", "");
+
+    const rc2Badge = (rc2Status === "unknown" && rc2Detectable === false) ? '<span class="small" style="opacity:.85; margin-left:.35rem;">(not distinct yet)</span>' : "";
+    const rc2NoteHtml = (rc2Status === "unknown" && rc2Detectable === false && rc2Note)
+      ? `<div class="small" style="opacity:.85; margin-top:.35rem;">RC2 note: ${escapeHtml(rc2Note)}</div>` : "";
+
+    const pidSummary = (arr) => arr && arr.length ? `${arr.length} PID${arr.length === 1 ? "" : "s"}` : "no pids";
+
+    card.innerHTML = `
+      <details open>
+        <summary>
+          <span class="summary-label"><span class="small ${statusClass(rc1Status)}">RC1: ${escapeHtml(rc1Status)}</span></span>
+          <span class="summary-chevron">></span>
+        </summary>
+        <div class="details-body">
+          <div class="label">PIDs (${escapeHtml(pidSummary(rc1Pids))})</div>
+          ${pidList(rc1Pids)}
+          <div class="label" style="margin-top:6px;">Command line(s)</div>
+          ${cmdList(rc1Cmds)}
+        </div>
+      </details>
+
+      <details>
+        <summary>
+          <span class="summary-label"><span class="small ${statusClass(rc2Status)}">RC2: ${escapeHtml(rc2Status)}</span>${rc2Badge}</span>
+          <span class="summary-chevron">></span>
+        </summary>
+        <div class="details-body">
+          ${rc2NoteHtml}
+          <div class="label" style="margin-top:6px;">PIDs (${escapeHtml(pidSummary(rc2Pids))})</div>
+          ${pidList(rc2Pids)}
+          <div class="label" style="margin-top:6px;">Command line(s)</div>
+          ${cmdList(rc2Cmds)}
+        </div>
+      </details>
+
+      <details>
+        <summary>
+          <span class="summary-label"><span class="small ${statusClass(rc3Status)}">RC3: ${escapeHtml(rc3Status)}</span></span>
+          <span class="summary-chevron">></span>
+        </summary>
+        <div class="details-body">
+          <div class="label">PIDs (${escapeHtml(pidSummary(rc3Pids))})</div>
+          ${pidList(rc3Pids)}
+          <div class="label" style="margin-top:6px;">Command line(s)</div>
+          ${cmdList(rc3Cmds)}
+        </div>
+      </details>
+
+      <details>
+        <summary>
+          <span class="summary-label"><span class="small">Renderers: ${escapeHtml(String(rendererCount))}</span></span>
+          <span class="summary-chevron">></span>
+        </summary>
+        <div class="details-body">
+          <div class="label">Renderer PIDs (${escapeHtml(pidSummary(rendererPids))})</div>
+          ${pidList(rendererPids)}
+        </div>
+      </details>
+
+      <details>
+        <summary>
+          <span class="summary-label"><span class="small">GPU pipeline: ${escapeHtml(String(gpuCount))}</span></span>
+          <span class="summary-chevron">></span>
+        </summary>
+        <div class="details-body">
+          <div class="label">Sample GPU command</div>
+          <div class="list"><div class="list-item mono">${gpuCmd ? escapeHtml(shorten(String(gpuCmd), 1200)) : "n/a"}</div></div>
+        </div>
+      </details>
+    `;
+  }
+
+  function renderDisks(snapshot) {
+    const disksCard = document.getElementById("disks-card");
+    if (!disksCard) return;
+    const disks = Array.isArray(snapshot.disks) ? snapshot.disks : [];
+    if (!disks.length) { disksCard.innerHTML = '<div class="small">No disk data.</div>'; return; }
+    const rows = disks.map(d => {
+      const name = d.name || "?";
+      const used = fmtBytes(d.used_bytes);
+      const free = fmtBytes(d.free_bytes);
+      const total = fmtBytes(d.total_bytes);
+      return `<div class="list-item"><div class="card-row"><div class="value mono">Drive ${escapeHtml(name)}</div><div class="small">${escapeHtml(used)} used / ${escapeHtml(free)} free</div></div><div class="small">Total: ${escapeHtml(total)}</div></div>`;
+    }).join("");
+    disksCard.innerHTML = `<div class="list">${rows}</div>`;
+  }
+
+  function renderSafepoints(snapshot) {
+    const card = document.getElementById("safepoints-card");
+    if (!card) return;
+    const sps = Array.isArray(snapshot.safepoints) ? snapshot.safepoints : [];
+    const packets = Array.isArray(snapshot.safepoint_candidates) ? snapshot.safepoint_candidates : [];
+    const realRows = sps.map((sp, idx) => {
+      const root = sp.root_path || "(unknown)";
+      const exists = sp.exists ? "yes" : "no";
+      const count = (typeof sp.zip_count === "number") ? sp.zip_count : "?";
+      const latest = sp.latest_zip || {};
+      const latestName = latest.name || "(none)";
+      const latestTime = latest.last_write || "n/a";
+      const latestSize = fmtBytes(latest.size_bytes || 0);
+      return `<div class="list-item">
+        <div class="card-row"><div class="small">Root ${idx+1}</div><div class="small">Exists: ${escapeHtml(exists)}</div></div>
+        <div class="label">Root path</div><div class="mono">${escapeHtml(root)}</div>
+        <div class="card-row" style="margin-top:4px;"><div class="label">ZIP count</div><div class="value">${escapeHtml(String(count))}</div></div>
+        <div class="label" style="margin-top:4px;">Latest ZIP</div><div class="mono">${escapeHtml(latestName)}</div>
+        <div class="small">Last write: ${escapeHtml(String(latestTime))}</div>
+        <div class="small">Size: ${escapeHtml(latestSize)}</div>
+      </div>`;
+    }).join("");
+
+    const realBlock = sps.length
+      ? `<div class="list">${realRows}</div>`
+      : '<div class="small">No SAFEPOINT summary.</div>';
+
+    const candidateHeader = '<div class="card-row" style="margin-top:8px;"><div class="label">Candidate review</div><div class="small">SAFEPOINT_CANDIDATE packets only</div></div>';
+    const candidateBlock = packets.length
+      ? `<div class="list" style="margin-top:6px;">${packets.map((packet, idx) => {
+          const status = packet.candidate_status || packet.dashboard_visibility || "BLOCKED";
+          const statusClass = status === "READY_FOR_REVIEW" || status === "PROMOTED" ? "value-ok" : (status === "BLOCKED" ? "value-warn" : "value-bad");
+          const ranges = Array.isArray(packet.included_week_ranges) ? packet.included_week_ranges.join(" | ") : "n/a";
+          const age = packet.latest_candidate_age_days != null ? String(packet.latest_candidate_age_days) + "d" : "n/a";
+          const path = packet.candidate_path || packet.packet_root || "(unknown)";
+          return `<div class="list-item">
+            <div class="card-row"><div class="small">Candidate ${idx + 1}</div><div class="value ${statusClass}">${escapeHtml(status)}</div></div>
+            <div class="label">Candidate path</div><div class="mono">${escapeHtml(path)}</div>
+            <div class="card-row" style="margin-top:4px;"><div class="label">Latest age</div><div class="value mono">${escapeHtml(age)}</div></div>
+            <div class="label" style="margin-top:4px;">Included week range</div><div class="mono">${escapeHtml(ranges)}</div>
+            <div class="card-row" style="margin-top:4px;"><div class="label">runtime_authority</div><div class="value ${packet.runtime_authority === false ? "value-ok" : "value-bad"}">${escapeHtml(packet.runtime_authority === false ? "false" : String(packet.runtime_authority ?? "n/a"))}</div></div>
+          </div>`;
+        }).join("")}</div>`
+      : '<div class="small">No SAFEPOINT candidate packets discovered.</div>';
+
+    card.innerHTML = `${realBlock}${candidateHeader}${candidateBlock}`;
+  }
+
+  function renderAlpha(snapshot) {
+    const alphaDetails = document.getElementById("alpha-details");
+    if (!alphaDetails) return;
+    const alpha = snapshot.alpha || {};
+    const latest = alpha.latest_file || null;
+    const path = alpha.path || "(not set)";
+    const exists = alpha.exists ? "yes" : "no";
+    const files24 = alpha.files_24h ?? 0;
+    const latestHtml = latest ? `<div class="mono">${escapeHtml(latest.full_path || latest.name || JSON.stringify(latest))}</div>`
+                              : `<div class="small">No recorded Alpha files.</div>`;
+    alphaDetails.innerHTML = `
+      <div class="card-row"><div><div class="label">Alpha path</div><div class="mono">${escapeHtml(path)}</div></div></div>
+      <div class="card-row"><div><div class="label">Folder exists</div><div class="value">${escapeHtml(exists)}</div></div></div>
+      <div class="card-row"><div><div class="label">Files last 24h</div><div class="value">${escapeHtml(String(files24))}</div></div></div>
+      <div style="margin-top:4px;"><div class="label">Latest file</div>${latestHtml}</div>
+    `;
+  }
+
+  function renderNotes(snapshot) {
+    const notesCard = document.getElementById("notes-card");
+    if (!notesCard) return;
+    const notes = Array.isArray(snapshot.notes) ? snapshot.notes : [];
+    if (!notes.length) { notesCard.innerHTML = '<div class="small">No notes captured for this snapshot.</div>'; return; }
+    const items = notes.map(n => `<div class="list-item small">- ${escapeHtml(n)}</div>`).join("");
+    notesCard.innerHTML = `<div class="list">${items}</div>`;
+  }
+
+  loadSnapshot(false);
+
+  // ---- Bolt RC2 ----
+
+  function boltStatusClass(s) {
+    const v = (s || "unknown").toLowerCase();
+    if (v === "running" || v === "ready") return "value-ok";
+    if (v === "stale" || v === "booting") return "value-warn";
+    if (v === "offline" || v === "awaiting") return "value-bad";
+    return "value-bad";
+  }
+
+  function boltBootClass(s) {
+    const v = (s || "unknown").toUpperCase();
+    if (v === "READY" || v === "STRICT_CLEAN") return "value-ok";
+    if (v === "ARTIFACT_DRIFT") return "value-bad";
+    return "value-warn";
+  }
+
+  function adjudicationClass(s) {
+    const v = (s || "unknown").toUpperCase();
+    if (v === "CLEAN") return "value-ok";
+    if (v === "DEGRADED") return "value-bad";
+    return "value-warn";
+  }
+
+  function renderBoltActionStatus() {
+    const state = window.__boltActionStatus || null;
+    if (!state) return "";
+    const cls = state.ok === true ? "value-ok" : (state.ok === false ? "value-bad" : "value-warn");
+    const when = state.utc ? ` <span class="mono" style="font-size:.7rem;">${escapeHtml(state.utc)}</span>` : "";
+    return `<div style="margin-bottom:8px; padding:8px 10px; border:1px solid rgba(31,41,55,.75); border-radius:10px;">
+      <div class="label">Operator action</div>
+      <div class="small ${cls}" style="line-height:1.35;">${escapeHtml(state.message || "")}${when}</div>
+    </div>`;
+  }
+
+  function renderBolt(bolt) {
+    const card = document.getElementById("bolt-card");
+    if (!card) return;
+
+    const bootStatus = bolt.boot_status || "UNKNOWN";
+    const lineageStatus = bolt.lineage_status || "UNKNOWN";
+    const lineageReason = bolt.lineage_reason || "No lineage detail available.";
+    const status = bolt.controller_status || "unknown";
+    const lastSeen = bolt.last_seen_utc || "n/a";
+    const lastHeart = bolt.last_heart_written_utc || "n/a";
+    const inboxIdx = bolt.inbox_index != null ? bolt.inbox_index : "n/a";
+    const secretaryStatus = bolt.secretary_status || "unknown";
+    const secretarySession = bolt.secretary_startup_session_id || "n/a";
+    const secretaryBacklog = bolt.secretary_backlog_count != null ? bolt.secretary_backlog_count : 0;
+    const secretaryQuarantine = bolt.secretary_quarantine_count != null ? bolt.secretary_quarantine_count : 0;
+    const adjudication = (bolt.adjudication && typeof bolt.adjudication === "object") ? bolt.adjudication : {};
+    const adjudicationStatus = adjudication.status || "UNKNOWN";
+    const degradedReasons = Array.isArray(adjudication.degraded_reasons) ? adjudication.degraded_reasons : [];
+    const degradedHighlights = Array.isArray(adjudication.degraded_highlights) ? adjudication.degraded_highlights : [];
+    const truths = Array.isArray(adjudication.truths) ? adjudication.truths : [];
+    const blocked = Array.isArray(adjudication.blocked) ? adjudication.blocked : [];
+    const unlawful = Array.isArray(adjudication.unlawful) ? adjudication.unlawful : [];
+    const latestAccepted = (adjudication.latest_accepted && typeof adjudication.latest_accepted === "object") ? adjudication.latest_accepted : {};
+    const conformance = (adjudication.conformance && typeof adjudication.conformance === "object") ? adjudication.conformance : {};
+    const safepoint = (adjudication.safepoint && typeof adjudication.safepoint === "object") ? adjudication.safepoint : {};
+    const currentSafepoint = (safepoint.current && typeof safepoint.current === "object") ? safepoint.current : {};
+    const cleanupReceipt = (adjudication.cleanup_receipt && typeof adjudication.cleanup_receipt === "object") ? adjudication.cleanup_receipt : {};
+
+    // Auto-update the top-level Bolt Boot pill
+    const bootPill = document.getElementById("bolt-boot-pill-value");
+    if (bootPill) {
+      bootPill.textContent = bootStatus;
+      bootPill.className = "meta-value " + boltStatusClass(bootStatus);
+    }
+
+    // Cmdlog entries
+    const cmdlog = Array.isArray(bolt.cmdlog) ? bolt.cmdlog : [];
+    const cmdlogHtml = cmdlog.length === 0
+      ? '<div class="small">No recent log entries.</div>'
+      : cmdlog.slice(0, 12).map(e => {
+          const ts = escapeHtml(e.ts || e.utc || "");
+          const st = escapeHtml(e.status || "");
+          const cmd = escapeHtml(e.cmd || "");
+          const extra = e.extra ? (" — " + escapeHtml(JSON.stringify(e.extra).slice(0, 80))) : "";
+          const stCls = st === "CR_WRITE" ? "value-ok" : st.includes("FAIL") ? "value-bad" : "";
+          return `<div class="list-item mono"><span class="small" style="opacity:.6;">${ts}</span> <span class="${stCls}">${st}</span> <strong>${cmd}</strong>${extra}</div>`;
+        }).join("");
+
+    // Heart bundles
+    const hearts = Array.isArray(bolt.hearts) ? bolt.hearts : [];
+    const heartsHtml = hearts.length === 0
+      ? '<div class="small">No HeartBundles found.</div>'
+      : hearts.map(h => {
+          const name = escapeHtml(h.name || "");
+          const mtime = escapeHtml(h.mtime || "");
+          const size = h.size_bytes != null ? fmtBytes(h.size_bytes) : "";
+          const preview = h.preview ? escapeHtml(h.preview.slice(0, 160).replace(/\n/g, " ")) : "";
+          return `<div class="list-item">
+            <div class="card-row"><div class="mono" style="font-size:.7rem;">${name}</div><div class="small">${mtime}</div></div>
+            <div class="small" style="opacity:.7;">${preview}${h.preview && h.preview.length > 160 ? "..." : ""}</div>
+            ${size ? `<div class="small">Size: ${size}</div>` : ""}
+          </div>`;
+        }).join("");
+
+    const truthHtml = truths.length === 0
+      ? '<div class="small">No adjudication truths available.</div>'
+      : truths.map((row) => `
+          <div class="list-item">
+            <div class="card-row"><div class="label">${escapeHtml(row.label || "Truth")}</div><div class="value mono">${escapeHtml(row.truth || "n/a")}</div></div>
+            <div class="small" style="line-height:1.35;">${escapeHtml(row.why || "")}</div>
+          </div>
+        `).join("");
+
+    const blockedHtml = blocked.length === 0
+      ? '<div class="small value-ok">Nothing is currently blocked at the authority boundary.</div>'
+      : blocked.map((item) => `<div class="list-item small">${escapeHtml(item)}</div>`).join("");
+
+    const unlawfulHtml = unlawful.length === 0
+      ? '<div class="small value-ok">No unlawful next-step detected from current evidence.</div>'
+      : unlawful.map((item) => `<div class="list-item small">${escapeHtml(item)}</div>`).join("");
+
+    const degradedHtml = degradedReasons.length === 0
+      ? '<div class="small value-ok">No degraded condition detected.</div>'
+      : degradedReasons.map((item) => `<div class="list-item small">${escapeHtml(item)}</div>`).join("");
+
+    const degradedHighlightsHtml = degradedHighlights.length === 0
+      ? ""
+      : `<div class="list" style="margin-top:6px;">${degradedHighlights.map((item) => `<div class="list-item mono" style="font-size:.72rem;">${escapeHtml(item)}</div>`).join("")}</div>`;
+
+    const degradedSurface = adjudicationStatus === "DEGRADED"
+      ? `
+        <div style="margin-bottom:10px; padding:10px 12px; border:1px solid rgba(239,68,68,.55); background:rgba(127,29,29,.35); border-radius:10px;">
+          <div class="card-row">
+            <div>
+              <div class="label" style="color:#fecaca;">Degraded Mode</div>
+              <div class="value value-bad">${escapeHtml(adjudication.headline || "Degraded mode active.")}</div>
+            </div>
+            <div><div class="label">Status</div><div class="value ${adjudicationClass(adjudicationStatus)}">${escapeHtml(adjudicationStatus)}</div></div>
+          </div>
+          ${degradedHighlightsHtml}
+          <div class="list" style="margin-top:6px;">${degradedHtml}</div>
+        </div>
+      `
+      : `
+        <div style="margin-bottom:10px; padding:10px 12px; border:1px solid rgba(52,211,153,.35); background:rgba(6,78,59,.22); border-radius:10px;">
+          <div class="card-row">
+            <div>
+              <div class="label" style="color:#bbf7d0;">Adjudication State</div>
+              <div class="value ${adjudicationClass(adjudicationStatus)}">${escapeHtml(adjudication.headline || "No degraded condition detected.")}</div>
+            </div>
+            <div><div class="label">Status</div><div class="value ${adjudicationClass(adjudicationStatus)}">${escapeHtml(adjudicationStatus)}</div></div>
+          </div>
+        </div>
+      `;
+
+    card.innerHTML = `
+      ${degradedSurface}
+      ${renderBoltActionStatus()}
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid rgba(31, 41, 55, 0.8);">
+        <div>
+          <div class="label">Boot status (Data)</div>
+          <div class="value ${boltStatusClass(bootStatus)}">${escapeHtml(bootStatus)}</div>
+        </div>
+        <div>
+          <div class="label">Lineage status</div>
+          <div class="value ${boltBootClass(lineageStatus)}">${escapeHtml(lineageStatus)}</div>
+        </div>
+        <div style="grid-column: 1 / -1;">
+          <div class="label">Lineage reason</div>
+          <div class="small" style="line-height:1.3;">${escapeHtml(lineageReason)}</div>
+        </div>
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:8px;">
+        <div><div class="label">Controller</div><div class="value ${boltStatusClass(status)}">${escapeHtml(status)}</div></div>
+        <div><div class="label">Inbox index</div><div class="value mono">${escapeHtml(String(inboxIdx))}</div></div>
+        <div><div class="label">Last seen (UTC)</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(lastSeen)}</div></div>
+        <div><div class="label">Last heart (UTC)</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(lastHeart)}</div></div>
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; margin-bottom:8px;">
+        <div><div class="label">Startup session</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(bolt.startup_session_id || "n/a")}</div></div>
+        <div><div class="label">Receipt verified (UTC)</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(bolt.startup_runtime_verified_utc || "n/a")}</div></div>
+        <div><div class="label">Receipt generated (UTC)</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(bolt.startup_receipt_generated_utc || "n/a")}</div></div>
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; margin-bottom:8px;">
+        <div><div class="label">Secretary</div><div class="value ${boltStatusClass(secretaryStatus)}">${escapeHtml(secretaryStatus)}</div></div>
+        <div><div class="label">Secretary session</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(secretarySession)}</div></div>
+        <div><div class="label">Session backlog</div><div class="value mono">${escapeHtml(String(secretaryBacklog))}</div></div>
+        <div><div class="label">Quarantine</div><div class="value mono">${escapeHtml(String(secretaryQuarantine))}</div></div>
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; margin-bottom:8px;">
+        <div><div class="label">Conformance</div><div class="value ${conformance.passed_all_base ? "value-ok" : "value-bad"}">${escapeHtml(conformance.level || "UNPROVEN")}</div></div>
+        <div><div class="label">Conformance verified</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(conformance.validated_utc || "n/a")}</div></div>
+        <div><div class="label">SAFEPOINT</div><div class="value ${safepoint.passed_all_base ? "value-ok" : "value-bad"}">${escapeHtml(safepoint.level || "UNPROVEN")}</div></div>
+        <div><div class="label">SAFEPOINT verified</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(safepoint.validated_utc || "n/a")}</div></div>
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; margin-bottom:8px;">
+        <div><div class="label">SAFEPOINT freshness</div><div class="value ${safepoint.proof_fresh ? "value-ok" : "value-bad"}">${escapeHtml(safepoint.proof_fresh ? "FRESH" : "STALE")}</div></div>
+        <div><div class="label">SAFEPOINT age</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(safepoint.validation_age_seconds != null ? String(safepoint.validation_age_seconds) + "s" : "n/a")}</div></div>
+        <div><div class="label">Latest accepted task</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(latestAccepted.task_id || "n/a")}</div></div>
+        <div><div class="label">Latest arbiter reason</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(latestAccepted.reason || "n/a")}</div></div>
+      </div>
+
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:8px; margin-bottom:8px;">
+        <div style="border:1px solid rgba(31,41,55,.75); border-radius:10px; padding:10px;">
+          <div class="label">What is true</div>
+          <div class="list" style="max-height:260px;">${truthHtml}</div>
+        </div>
+        <div style="border:1px solid rgba(31,41,55,.75); border-radius:10px; padding:10px;">
+          <div class="label">What is blocked</div>
+          <div class="list" style="max-height:260px;">${blockedHtml}</div>
+        </div>
+        <div style="border:1px solid rgba(31,41,55,.75); border-radius:10px; padding:10px;">
+          <div class="label">What cannot proceed lawfully</div>
+          <div class="list" style="max-height:260px;">${unlawfulHtml}</div>
+        </div>
+      </div>
+
+      <details style="margin-top:6px;" open>
+        <summary><span class="summary-label"><span class="small">Authority boundary proof</span></span><span class="summary-chevron">></span></summary>
+        <div class="details-body">
+          <div class="card-row"><div><div class="label">Latest accepted task</div><div class="value mono">${escapeHtml(latestAccepted.task_id || "n/a")}</div></div></div>
+          <div class="card-row"><div><div class="label">Accepted at</div><div class="value mono">${escapeHtml(latestAccepted.decided_utc || "n/a")}</div></div></div>
+          <div class="card-row"><div><div class="label">Authority reason</div><div class="value mono">${escapeHtml(latestAccepted.reason || "n/a")}</div></div></div>
+          <div class="card-row"><div><div class="label">Latest cleanup receipt</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(cleanupReceipt.receipt_utc || "n/a")}</div></div></div>
+          <div class="card-row"><div><div class="label">Last removed path</div><div class="value mono" style="font-size:.7rem; word-break:break-all;">${escapeHtml(cleanupReceipt.removed_path || "n/a")}</div></div></div>
+        </div>
+      </details>
+
+      <details style="margin-top:6px;" open>
+        <summary><span class="summary-label"><span class="small">SAFEPOINT proof</span></span><span class="summary-chevron">></span></summary>
+        <div class="details-body">
+          <div class="card-row">
+            <div><div class="label">Operator action</div><div class="small">Manual SAFEPOINT revalidation only. No background auto-refresh.</div></div>
+            <div><button class="btn-refresh" onclick="revalidateSafepoint(this)">Revalidate SAFEPOINT</button></div>
+          </div>
+          <div class="card-row"><div><div class="label">Validated ZIP</div><div class="value mono" style="font-size:.7rem; word-break:break-all;">${escapeHtml(safepoint.validated_zip_path || "n/a")}</div></div></div>
+          <div class="card-row"><div><div class="label">Validated receipt</div><div class="value mono" style="font-size:.7rem; word-break:break-all;">${escapeHtml(safepoint.validated_receipt_path || "n/a")}</div></div></div>
+          <div class="card-row"><div><div class="label">Validated ZIP SHA</div><div class="value mono" style="font-size:.7rem; word-break:break-all;">${escapeHtml(safepoint.validated_zip_sha256 || "n/a")}</div></div></div>
+          <div class="card-row"><div><div class="label">Proof freshness</div><div class="value ${safepoint.proof_fresh ? "value-ok" : "value-bad"}">${escapeHtml(safepoint.proof_fresh ? "FRESH" : "STALE")}</div></div></div>
+          <div class="card-row"><div><div class="label">Validation age</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(safepoint.validation_age_seconds != null ? String(safepoint.validation_age_seconds) + "s" : "n/a")}</div></div></div>
+          <div class="card-row"><div><div class="label">Freshness limit</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(safepoint.proof_max_age_seconds != null ? String(safepoint.proof_max_age_seconds) + "s" : "n/a")}</div></div></div>
+          <div class="card-row"><div><div class="label">Current latest ZIP</div><div class="value mono" style="font-size:.7rem; word-break:break-all;">${escapeHtml(currentSafepoint.zip_path || "n/a")}</div></div></div>
+          <div class="card-row"><div><div class="label">Current latest SHA</div><div class="value mono" style="font-size:.7rem; word-break:break-all;">${escapeHtml(currentSafepoint.zip_sha256 || "n/a")}</div></div></div>
+          <div class="card-row"><div><div class="label">SAFEPOINT lineage</div><div class="value ${safepoint.lineage_clear ? "value-ok" : "value-bad"}">${escapeHtml(safepoint.lineage_clear ? "MATCHED" : "DRIFTED")}</div></div></div>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="summary-label"><span class="small">Recent HeartBundles (${hearts.length})</span></span><span class="summary-chevron">></span></summary>
+        <div class="details-body"><div class="list" style="max-height:200px;">${heartsHtml}</div></div>
+      </details>
+
+      <details style="margin-top:6px;">
+        <summary><span class="summary-label"><span class="small">Command log (last ${Math.min(cmdlog.length,12)} entries)</span></span><span class="summary-chevron">></span></summary>
+        <div class="details-body"><div class="list" style="max-height:220px;">${cmdlogHtml}</div></div>
+      </details>
+    `;
+  }
+
+
+  function renderOrchestrator(data) {
+    const card = document.getElementById("orchestrator-card");
+    if (!card) return;
+
+    const status = (data && data.status) ? String(data.status) : "unknown";
+    const strict = data && data.strict_cr_quality_gate ? "enabled" : "disabled";
+    const started = data && data.started ? String(data.started) : "n/a";
+    const finished = data && data.finished ? String(data.finished) : "n/a";
+    const failedStep = data && data.failed_step ? String(data.failed_step) : "none";
+    const stepCount = data && Number.isFinite(data.step_count) ? data.step_count : 0;
+    const failedReq = data && Number.isFinite(data.failed_required_count) ? data.failed_required_count : 0;
+    const lockPid = safeGet(data, "lock.pid", "n/a");
+    const lockStarted = safeGet(data, "lock.started", "n/a");
+
+    const cls = status === "ok" ? "value-ok" : (status === "running" ? "value-warn" : "value-bad");
+
+    const steps = Array.isArray(data && data.steps) ? data.steps : [];
+    const stepHtml = steps.length === 0
+      ? '<div class="small">No orchestrator steps recorded yet.</div>'
+      : steps.map((s) => {
+          const n = escapeHtml(s.name || "step");
+          const st = escapeHtml(s.status || "unknown");
+          const ec = (s.exit_code === null || s.exit_code === undefined) ? "n/a" : String(s.exit_code);
+          const dur = (typeof s.duration_sec === "number") ? s.duration_sec.toFixed(3) : "n/a";
+          const stCls = (s.status === "ok") ? "value-ok" : ((s.status === "missing") ? "value-warn" : "value-bad");
+          return `<div class="list-item mono"><span class="${stCls}">${st}</span> ${n} | exit=${escapeHtml(ec)} | dur=${escapeHtml(dur)}s</div>`;
+        }).join("");
+
+    card.innerHTML = `
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:8px;">
+        <div><div class="label">Status</div><div class="value ${cls}">${escapeHtml(status)}</div></div>
+        <div><div class="label">Strict Gate</div><div class="value">${escapeHtml(strict)}</div></div>
+        <div><div class="label">Steps</div><div class="value mono">${escapeHtml(String(stepCount))}</div></div>
+        <div><div class="label">Required Fails</div><div class="value ${failedReq > 0 ? "value-bad" : "value-ok"}">${escapeHtml(String(failedReq))}</div></div>
+        <div><div class="label">Lock PID</div><div class="value mono">${escapeHtml(String(lockPid))}</div></div>
+      </div>
+      <div class="card-row"><div><div class="label">Started</div><div class="value mono">${escapeHtml(started)}</div></div></div>
+      <div class="card-row"><div><div class="label">Finished</div><div class="value mono">${escapeHtml(finished)}</div></div></div>
+      <div class="card-row"><div><div class="label">Lock started</div><div class="value mono">${escapeHtml(String(lockStarted))}</div></div></div>
+      <div class="card-row"><div><div class="label">Failed step</div><div class="value mono">${escapeHtml(failedStep)}</div></div></div>
+
+      <details style="margin-top:6px;" open>
+        <summary><span class="summary-label"><span class="small">Step execution summary (${steps.length})</span></span><span class="summary-chevron">></span></summary>
+        <div class="details-body"><div class="list" style="max-height:220px;">${stepHtml}</div></div>
+      </details>
+    `;
+  }
+
+  function renderDailyBundle(data) {
+    const card = document.getElementById("dailybundle-card");
+    if (!card) return;
+
+    const artifact = (data && typeof data.artifact === "object") ? data.artifact : {};
+    const topology = (data && typeof data.topology === "object") ? data.topology : {};
+    const scheduler = (data && typeof data.scheduler_integrity === "object") ? data.scheduler_integrity : {};
+    const gates = Array.isArray(data && data.validation_gates) ? data.validation_gates : [];
+    const lanes = Array.isArray(data && data.install_lanes) ? data.install_lanes : [];
+    const status = data && data.status ? String(data.status) : "unknown";
+    const statusCls = status === "ok" ? "value-ok" : (status === "todo" || status === "not_reported" ? "value-warn" : "value-bad");
+
+    const gateHtml = gates.length === 0
+      ? '<div class="small">No validation gates surfaced yet.</div>'
+      : gates.map((g) => {
+          const st = escapeHtml(g.status || "unknown");
+          const cls = g.status === "ok" ? "value-ok" : (g.status === "todo" ? "value-warn" : "value-bad");
+          return `<div class="list-item"><span class="${cls}">${st}</span> <span class="mono">${escapeHtml(g.name || "gate")}</span><div class="small">${escapeHtml(g.note || "")}</div></div>`;
+        }).join("");
+
+    const laneHtml = lanes.length === 0
+      ? '<div class="small">No install lanes declared.</div>'
+      : lanes.map((lane) => {
+          return `<div class="list-item"><span class="mono">${escapeHtml(lane.name || "lane")}</span> <span class="small">${escapeHtml(lane.status || "unknown")}</span><div class="small">${escapeHtml(lane.surface || "")}</div></div>`;
+        }).join("");
+
+    card.innerHTML = `
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:8px; margin-bottom:8px;">
+        <div><div class="label">Build Status</div><div class="value ${statusCls}">${escapeHtml(status)}</div></div>
+        <div><div class="label">Orchestrator</div><div class="value">${escapeHtml(data.orchestrator_status || "unknown")}</div></div>
+        <div><div class="label">Strict Gate</div><div class="value">${data.strict_cr_quality_gate ? "enabled" : "disabled"}</div></div>
+        <div><div class="label">Scheduler</div><div class="value">${escapeHtml(scheduler.status || "not_reported")} / ${escapeHtml(scheduler.mode || "unknown")}</div></div>
+      </div>
+      <div class="card-row"><div><div class="label">Zip</div><div class="value mono">${escapeHtml(artifact.zip || "not surfaced")}</div></div></div>
+      <div class="card-row"><div><div class="label">SHA256</div><div class="value mono">${escapeHtml(artifact.sha256 || "not surfaced")}</div></div></div>
+      <div class="card-row"><div><div class="label">Manifest</div><div class="value mono">${escapeHtml(artifact.manifest_latest || artifact.manifest_sidecar || "not surfaced")}</div></div></div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap:8px; margin-top:8px;">
+        <div>
+          <div class="label">Public Topology</div>
+          <div class="list">
+            <div class="list-item mono">install=${escapeHtml(topology.default_install_root || "")}</div>
+            <div class="list-item mono">config=${escapeHtml(topology.config_path || "")}</div>
+            <div class="list-item mono">runtime=${escapeHtml(topology.runtime_root || "")}</div>
+            <div class="list-item mono">logs=${escapeHtml(topology.logs_root || "")}</div>
+          </div>
+        </div>
+        <div>
+          <div class="label">Validation Gates</div>
+          <div class="list">${gateHtml}</div>
+        </div>
+        <div>
+          <div class="label">Install Lanes</div>
+          <div class="list">${laneHtml}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadDailyBundle() {
+    try {
+      const r = await fetch("/api/apps/dailybundle?nocache=" + Date.now());
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      renderDailyBundle(data);
+    } catch (err) {
+      const card = document.getElementById("dailybundle-card");
+      if (card) card.innerHTML = '<div class="small" style="color:#f97373;">Failed to load Daily Bundle data: ' + escapeHtml(err.message || "unknown") + "</div>";
+    }
+  }
+
+  async function loadOrchestrator() {
+    try {
+      const r = await fetch("/api/orchestrator?nocache=" + Date.now());
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      renderOrchestrator(data);
+    } catch (err) {
+      const card = document.getElementById("orchestrator-card");
+      if (card) card.innerHTML = '<div class="small" style="color:#f97373;">Failed to load orchestrator data: ' + escapeHtml(err.message || "unknown") + "</div>";
+    }
+  }
+  async function loadBolt() {
+    try {
+      const r = await fetch("/api/bolt?nocache=" + Date.now());
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const bolt = await r.json();
+      renderBolt(bolt);
+    } catch (err) {
+      const card = document.getElementById("bolt-card");
+      if (card) card.innerHTML = '<div class="small" style="color:#f97373;">Failed to load Bolt data: ' + escapeHtml(err.message || "unknown") + "</div>";
+    }
+  }
+
+  function renderSmcWrcLiveStatus(data) {
+    const card = document.getElementById("smc-wrc-live-status-card");
+    if (!card) return;
+
+    function getStatusClass(color) {
+      if (color === "GREEN") return "value-ok";
+      if (color === "YELLOW") return "value-warn";
+      if (color === "ORANGE") return "value-warn"; // Using warn for orange in existing classes
+      if (color === "RED") return "value-bad";
+      return "";
+    }
+
+    const age = data.checkpoint_age != null ? String(data.checkpoint_age) + "s" : "n/a";
+    const statusCls = getStatusClass(data.status_color);
+
+    card.innerHTML = `
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; margin-bottom:8px;">
+        <div><div class="label">Active Window</div><div class="value ${data.active_window ? "value-ok" : "value-warn"}">${data.active_window ? "YES" : "NO"}</div></div>
+        <div><div class="label">Observer Running</div><div class="value ${data.observer_running ? "value-ok" : "value-bad"}">${data.observer_running ? "YES" : "NO"}</div></div>
+        <div><div class="label">Status Code</div><div class="value ${statusCls}">${escapeHtml(data.status_color)}</div></div>
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:8px;">
+        <div><div class="label">Session ID</div><div class="value mono">${escapeHtml(data.session_id)}</div></div>
+        <div><div class="label">Window</div><div class="value">${escapeHtml(data.window_name)}</div></div>
+        <div><div class="label">Range</div><div class="value">${escapeHtml(data.window_range)}</div></div>
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; margin-bottom:8px;">
+        <div><div class="label">Latest Checkpoint</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(data.latest_checkpoint)}</div></div>
+        <div><div class="label">Checkpoint Age</div><div class="value mono">${escapeHtml(age)}</div></div>
+        <div><div class="label">Resolver State</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(data.resolver_state)}</div></div>
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:8px; border-top:1px solid rgba(31, 41, 55, 0.8); padding-top:8px;">
+        <div><div class="label">FAST Suppressed</div><div class="value">${escapeHtml(String(data.fast_suppressed_count))}</div></div>
+        <div><div class="label">Ignore (Noise)</div><div class="value">${escapeHtml(String(data.ignore_non_media_count))}</div></div>
+        <div><div class="label">Player Configs</div><div class="value">${escapeHtml(String(data.player_config_count))}</div></div>
+        <div><div class="label">Unknown Linear</div><div class="value">${escapeHtml(String(data.unknown_plausible_linear_count))}</div></div>
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:8px;">
+        <div><div class="label">Seed Matches</div><div class="value value-ok">${escapeHtml(String(data.seed_match_fresh_candidate_count))}</div></div>
+        <div><div class="label">Direct Source Found</div><div class="value ${data.direct_source_found ? "value-ok" : ""}">${data.direct_source_found ? "TRUE" : "FALSE"}</div></div>
+        <div><div class="label">DRM Detected</div><div class="value ${data.drm_detected ? "value-bad" : ""}">${data.drm_detected ? "TRUE" : "FALSE"}</div></div>
+      </div>
+      <div class="card-row" style="border-top:1px solid rgba(31, 41, 55, 0.8); padding-top:8px;">
+        <div><div class="label">Next Safe Action</div><div class="value mono ${statusCls}">${escapeHtml(data.next_safe_action)}</div></div>
+      </div>
+    `;
+  }
+
+  async function loadSmcWrcLiveStatus() {
+    try {
+      const r = await fetch("/api/smc/wrc-live-status?nocache=" + Date.now());
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      renderSmcWrcLiveStatus(data);
+    } catch (err) {
+      const card = document.getElementById("smc-wrc-live-status-card");
+      if (card) card.innerHTML = '<div class="small" style="color:#f97373;">Failed to load WRC status: ' + escapeHtml(err.message || "unknown") + "</div>";
+    }
+  }
+
+  async function revalidateSafepoint(button) {
+    const prevText = button ? button.textContent : "";
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Revalidating...";
+    }
+    window.__boltActionStatus = {
+      ok: null,
+      message: "Running SAFEPOINT validator...",
+      utc: new Date().toISOString()
+    };
+    await loadBolt();
+    try {
+      const r = await fetch("/api/bolt/revalidate-safepoint?nocache=" + Date.now(), { method: "POST" });
+      const data = await r.json();
+      const report = (data && typeof data.report === "object") ? data.report : {};
+      const level = report.conformance_level || "UNKNOWN";
+      const validatedUtc = report.validated_utc || new Date().toISOString();
+      if (!r.ok || data.ok !== true) {
+        throw new Error((data && (data.error || data.stderr)) || ("HTTP " + r.status));
+      }
+      window.__boltActionStatus = {
+        ok: true,
+        message: "SAFEPOINT revalidated: " + level,
+        utc: validatedUtc
+      };
+      await loadBolt();
+    } catch (err) {
+      window.__boltActionStatus = {
+        ok: false,
+        message: "SAFEPOINT revalidation failed: " + (err && err.message ? err.message : "unknown"),
+        utc: new Date().toISOString()
+      };
+      await loadBolt();
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = prevText || "Revalidate SAFEPOINT";
+      }
+    }
+  }
+
+  loadOrchestrator();
+  loadDailyBundle();
+  loadBolt();
+  loadSmcWrcLiveStatus();
+  setInterval(loadOrchestrator, 10000);
+  setInterval(loadDailyBundle, 10000);
+  setInterval(loadBolt, 10000);
+  setInterval(loadSmcWrcLiveStatus, 10000);
+
+  // ---- Unity Model Dashboard ----
+
+  function modelStatusClass(s) {
+    const v = (s || "unknown").toString().toUpperCase();
+    if (v === "WORKING_CONTROL" || v === "FUNCTIONAL_AFTER_REPAIR" || v === "VALIDATED" || v === "ACTIVE") return "value-ok";
+    if (v === "CAPPED" || v === "ROUTE_ENFORCED_ONLY" || v === "CANDIDATE" || v === "DOWNLOADED_ONLY") return "value-warn";
+    if (v === "UNUSABLE" || v === "BLOCKED_WITH_SIGNATURE" || v === "PICKER_COVERAGE_GAP") return "value-bad";
+    return "value-warn";
+  }
+
+  function modelConfidenceClass(c) {
+    const v = (c || "").toString().toUpperCase();
+    if (v === "HIGH") return "value-ok";
+    if (v === "MEDIUM" || v === "LOW") return "value-warn";
+    return "value-bad";
+  }
+
+  function renderModelSummary(data) {
+    const fleetBar = document.getElementById("fleet-health-bar");
+    const modeStrip = document.getElementById("mode-strip");
+    if (!fleetBar || !modeStrip) return;
+    const visual = data.visual || {};
+    const cards = visual.lane_cards || [];
+    const summary = data.summary || {};
+    const policy = data.policy || {};
+    const stateCounts = {};
+    cards.forEach(function(c) { var s = c.lane_state || "UNKNOWN"; stateCounts[s] = (stateCounts[s] || 0) + 1; });
+    var ready = stateCounts["READY"] || 0, risk = stateCounts["DEFAULT_RISK"] || 0, stale = stateCounts["STALE"] || 0, blocked = stateCounts["BLOCKED"] || 0, unknown = stateCounts["UNKNOWN"] || 0;
+    var total = cards.length || 1;
+    var fleetHtml = '<div class="fleet-bar">';
+    if (ready) fleetHtml += '<div class="fleet-bar-segment ready" style="flex:' + ready + '" title="Ready: ' + ready + ' models">' + ready + '</div>';
+    if (risk) fleetHtml += '<div class="fleet-bar-segment risk" style="flex:' + risk + '" title="Default risk: ' + risk + ' models">' + risk + '</div>';
+    if (stale) fleetHtml += '<div class="fleet-bar-segment stale" style="flex:' + stale + '" title="Stale: ' + stale + ' models">' + stale + '</div>';
+    if (blocked) fleetHtml += '<div class="fleet-bar-segment blocked" style="flex:' + blocked + '" title="Blocked: ' + blocked + ' models">' + blocked + '</div>';
+    if (unknown) fleetHtml += '<div class="fleet-bar-segment unknown" style="flex:' + unknown + '" title="Unknown: ' + unknown + ' models">' + unknown + '</div>';
+    fleetHtml += '</div><div style="display:flex; gap:12px; flex-wrap:wrap; font-size:0.7rem; margin-top:4px;">';
+    fleetHtml += '<span><span class="health-dot ok" style="width:6px;height:6px;"></span> Ready: ' + ready + '</span>';
+    fleetHtml += '<span><span class="health-dot warn" style="width:6px;height:6px;"></span> Default Risk: ' + risk + '</span>';
+    fleetHtml += '<span><span class="health-dot neutral" style="width:6px;height:6px;"></span> Stale: ' + stale + '</span>';
+    fleetHtml += '<span><span class="health-dot bad" style="width:6px;height:6px;"></span> Blocked: ' + blocked + '</span>';
+    fleetHtml += '<span><span class="health-dot neutral" style="width:6px;height:6px;"></span> Unknown: ' + unknown + '</span></div>';
+    fleetBar.innerHTML = fleetHtml;
+    var mode = data.mode || "home";
+    var modeIcon = mode === "home" ? "\uD83C\uDFE0" : "\uD83C\uDFE2";
+    var sensitiveText = policy.sensitive_data_allowed;
+    var sensitiveDisplay = sensitiveText === "POLICY_CONTROLLED" ? "POLICY_CONTROLLED" : (sensitiveText === "BLOCKED" ? "BLOCKED" : "UNKNOWN");
+    var sensitiveCls = sensitiveDisplay === "BLOCKED" ? "value-ok" : (sensitiveDisplay === "POLICY_CONTROLLED" ? "value-warn" : "value-bad");
+    var eligible = 0; cards.forEach(function(c) { if (c.eligible) eligible++; });
+    var maxCost = policy.max_cost_class || "?";
+    var tiers = (policy.default_allowed_tiers || []).join(", ");
+    modeStrip.innerHTML = '<span class="mode-icon">' + modeIcon + '</span><span class="mode-name">' + escapeHtml(data.mode_label || "") + '</span><span class="mode-stat">Eligible: <strong>' + eligible + '</strong></span><span class="mode-stat">Sensitive: <span class="' + sensitiveCls + '">' + escapeHtml(sensitiveDisplay) + '</span></span><span class="mode-stat">Max cost: ' + escapeHtml(maxCost) + '</span><span class="mode-stat">Tiers: ' + escapeHtml(tiers) + '</span><span class="mode-tag">' + (mode === "home" ? "Personal" : "Admin") + '</span>';
+    var tag = document.getElementById("models-count-tag");
+    if (tag) tag.textContent = total + " MODELS";
+  }
+
+  function renderModelLanes(data) {
+    var card = document.getElementById("models-lanes-card");
+    if (!card) return;
+    var rows = Array.isArray(data.rows) ? data.rows : [];
+    var visual = data.visual || {};
+    var laneCards = visual.lane_cards || [];
+    var mode = data.mode || "home";
+    if (!rows.length) { card.innerHTML = '<div class="small">No model rows loaded.</div>'; return; }
+    var laneMap = {};
+    laneCards.forEach(function(lc) { laneMap[lc.alias] = lc; });
+    var local = [], cloud = [];
+    rows.forEach(function(row) { if (row.route_tier === "local") local.push(row); else cloud.push(row); });
+    function renderCard(row, index) {
+      var lc = laneMap[row.alias] || {};
+      var laneState = lc.lane_state || "UNKNOWN";
+      var riskBadges = lc.risk_badges || [];
+      var eligible = lc.eligible;
+      var unsafeCount = lc.unsafe_count || 0;
+      var homeLabel = "", homeCls = "";
+      if (mode === "home") {
+        if (laneState === "READY") { homeLabel = "Available"; homeCls = "available"; }
+        else if (laneState === "DEFAULT_RISK") { homeLabel = "Needs tuning"; homeCls = "needs-tuning"; }
+        else if (laneState === "STALE") { homeLabel = "Needs attention"; homeCls = "needs-tuning"; }
+        else if (laneState === "BLOCKED") { homeLabel = "Not available"; homeCls = "not-available"; }
+        else { homeLabel = "Unchecked"; homeCls = "unchecked"; }
+      }
+      var dotCls = laneState === "READY" ? "ok" : (laneState === "DEFAULT_RISK" ? "warn" : (laneState === "BLOCKED" ? "bad" : "neutral"));
+      var delay = (index % 10) * 0.03;
+      var riskPills = riskBadges.map(function(b) {
+        var cls = b === "CTX" ? "ctx" : b === "TEMP" ? "temp" : b === "OUTPUT" ? "output" : b === "TIMEOUT" ? "timeout" : b === "PROFILE" ? "profile" : "route";
+        return '<span class="risk-pill ' + cls + '">' + escapeHtml(b) + '</span>';
+      }).join("");
+      var html = '<div class="model-card" style="animation-delay:' + delay + 's">';
+      html += '<div class="card-head"><span class="health-dot ' + dotCls + '"></span><span class="alias">' + escapeHtml(row.alias) + '</span><span class="desc">' + escapeHtml((row.description || "").substring(0, 40)) + '</span></div>';
+      html += '<div class="card-body-row">';
+      if (mode === "home") {
+        html += '<span class="home-label ' + homeCls + '">' + homeLabel + '</span>';
+      } else {
+        html += '<span class="stat"><span class="label">State:</span> ' + escapeHtml(laneState) + '</span>';
+      }
+      html += '<span class="stat"><span class="label">Tier:</span> ' + escapeHtml(row.route_tier || "") + ' T' + escapeHtml(String(row.usage_tier || "?")) + '</span>';
+      html += '<span class="stat"><span class="label">Conf:</span> ' + escapeHtml(row.confidence || "LOW") + '</span>';
+      html += eligible ? '<span class="stat" style="color:#4ade80;">Eligible</span>' : '<span class="stat" style="color:#fbbf24;">Restricted</span>';
+      if (unsafeCount > 0) html += '<span class="stat" style="color:#f97373;">' + unsafeCount + ' unsafe</span>';
+      html += '</div>';
+      if (riskPills) html += '<div class="risk-pills">' + riskPills + '</div>';
+      // Wrapper chips — active/main-board wrappers only
+      if (row.wrappers && row.wrappers.length) {
+        html += '<div style="display:flex; gap:3px; flex-wrap:wrap; margin-top:4px;">';
+        row.wrappers.forEach(function(w) {
+          html += '<span class="pill" style="font-size:0.55rem; padding:1px 5px;" title="' + escapeHtml(w.label) + ': ' + escapeHtml(w.evidence_status) + '">' +
+            '<span class="pill-dot ' + (w.configured ? "ok" : "warn") + '"></span>' +
+            escapeHtml(w.icon_key) +
+            '</span>';
+        });
+        html += '</div>';
+      }
+      html += '<details style="margin-top:4px;"><summary style="font-size:0.65rem; color:var(--text-muted);"><span>Settings & evidence</span></summary><div class="details-body" style="font-size:0.68rem;">';
+      html += '<div>Model: ' + escapeHtml(row.model || "") + '</div>';
+      html += '<div>Provider: ' + escapeHtml(row.provider_base_url || "n/a") + '</div>';
+      html += '<div>Profile: ' + escapeHtml(row.codex_profile || "n/a") + '</div>';
+      html += '<div>Default allowed: ' + (row.default_allowed ? "Yes" : "No") + '</div>';
+      html += '<div>Write allowed: ' + (row.write_allowed ? "Yes" : "No") + '</div>';
+      if (row.next_action) html += '<div style="color:var(--text-warn);">Next: ' + escapeHtml(row.next_action) + '</div>';
+      html += '</div></details></div>';
+      return html;
+    }
+    var result = "";
+    if (local.length) { result += '<div class="group-header">Local Models (' + local.length + ')</div><div class="model-grid">'; local.forEach(function(row, i) { result += renderCard(row, i); }); result += '</div>'; }
+    if (cloud.length) { result += '<div class="group-header">Cloud Models (' + cloud.length + ')</div><div class="model-grid">'; cloud.forEach(function(row, i) { result += renderCard(row, local.length + i); }); result += '</div>'; }
+    card.innerHTML = result;
+  }
+
+  function renderModelSettings(data) {
+    const card = document.getElementById("models-settings-card");
+    if (!card) return;
+    const rows = Array.isArray(data.rows) ? data.rows : [];
+    if (!rows.length) {
+      card.innerHTML = '<div class="small">No settings data loaded.</div>';
+      return;
+    }
+
+    const tableHtml = rows.map((row) => {
+      const settings = Array.isArray(row.settings) ? row.settings : [];
+      const settingsRows = settings.map((s) => {
+        const valStr = s.value !== null && s.value !== undefined ? String(s.value) : "n/a";
+        const valCls = s.is_unsafe ? "value-bad" : (s.is_default ? "value-warn" : "value-ok");
+        const srcLabel = s.source === "explicit" ? "EXPLICIT" : (s.source === "config" ? "CONFIG" : "DEFAULT");
+        return `<div class="list-item" style="display:grid; grid-template-columns: 1fr auto auto; gap:8px; align-items:center;">
+          <div class="label">${escapeHtml(s.label)}</div>
+          <div class="value ${valCls} mono">${escapeHtml(valStr)}</div>
+          <span class="small" style="font-size:.6rem; text-transform:uppercase; letter-spacing:.1em; ${s.is_default ? "color:var(--text-warn);" : "color:var(--text-ok);"}">${srcLabel}</span>
+        </div>`;
+      }).join("");
+
+      return `<div class="list-item" style="margin-bottom:8px;">
+        <div class="card-row">
+          <div class="value mono" style="font-size:.8rem;">${escapeHtml(row.alias)}</div>
+          <span class="small ${modelStatusClass(row.status)}">${escapeHtml(row.status)}</span>
+        </div>
+        <div class="list" style="max-height:none;">${settingsRows}</div>
+      </div>`;
+    }).join("");
+
+    card.innerHTML = `<div class="list" style="max-height:none;">${tableHtml}</div>`;
+  }
+
+  function renderModelEdits(data) {
+    const card = document.getElementById("models-edits-card");
+    if (!card) return;
+    const receipts = Array.isArray(data) ? data : [];
+    if (!receipts.length) {
+      card.innerHTML = '<div class="small">No edit receipts found. All settings are read-only by default.</div>';
+      return;
+    }
+    const items = receipts.map((r) => {
+      const ts = r.timestamp_utc || r._mtime || "n/a";
+      const model = r.model_alias || "unknown";
+      const field = r.field || "unknown";
+      const diff = r.diff || "n/a";
+      const status = r.status || "unknown";
+      const stCls = status === "applied" ? "value-ok" : (status === "pending_apply" ? "value-warn" : "value-bad");
+      return `<div class="list-item">
+        <div class="card-row">
+          <div class="mono" style="font-size:.7rem;">${escapeHtml(model)}</div>
+          <span class="small ${stCls}">${escapeHtml(status)}</span>
+        </div>
+        <div class="small mono">${escapeHtml(diff)}</div>
+        <div class="small" style="opacity:.6;">${escapeHtml(ts)}</div>
+      </div>`;
+    }).join("");
+    card.innerHTML = `<div class="list" style="max-height:300px;">${items}</div>`;
+  }
+
+  // ---- Visual Layer Components ----
+
+  function laneStateClass(state) {
+    const v = (state || '').toString().toUpperCase();
+    if (v === 'READY' || v === 'VERIFIED') return 'value-ok';
+    if (v === 'DEFAULT_RISK' || v === 'RECOMMENDED' || v === 'STALE') return 'value-warn';
+    if (v === 'BLOCKED' || v === 'REQUIRES_REASON') return 'value-bad';
+    return 'value-warn';
+  }
+
+  function laneStateDot(state) {
+    const v = (state || '').toString().toUpperCase();
+    if (v === 'READY' || v === 'VERIFIED') return 'ok';
+    if (v === 'DEFAULT_RISK' || v === 'RECOMMENDED' || v === 'STALE') return 'warn';
+    if (v === 'BLOCKED' || v === 'REQUIRES_REASON') return 'bad';
+    return 'warn';
+  }
+
+    function renderVisualLayer(data) {
+    const visual = data.visual || {};
+    if (!visual.lane_cards) return;
+
+    // Update risk summary with visual heat grid
+    const riskheatCard = document.getElementById('models-riskheat-card');
+    if (riskheatCard && visual.risk_summary) {
+      const rs = visual.risk_summary;
+      const total = rs.total || 0;
+      const items = [
+        {key: "TOTAL", val: total, cls: total > 50 ? "severe" : total > 20 ? "high" : total > 5 ? "medium" : "none"},
+        {key: "CTX", val: rs.ctx_risk || 0, cls: (rs.ctx_risk || 0) > 15 ? "severe" : (rs.ctx_risk || 0) > 8 ? "high" : (rs.ctx_risk || 0) > 0 ? "medium" : "none"},
+        {key: "TEMP", val: rs.temp_risk || 0, cls: (rs.temp_risk || 0) > 15 ? "severe" : (rs.temp_risk || 0) > 8 ? "high" : (rs.temp_risk || 0) > 0 ? "medium" : "none"},
+        {key: "OUTPUT", val: rs.output_risk || 0, cls: (rs.output_risk || 0) > 15 ? "severe" : (rs.output_risk || 0) > 8 ? "high" : (rs.output_risk || 0) > 0 ? "medium" : "none"},
+        {key: "TIMEOUT", val: rs.timeout_risk || 0, cls: (rs.timeout_risk || 0) > 15 ? "severe" : (rs.timeout_risk || 0) > 8 ? "high" : (rs.timeout_risk || 0) > 0 ? "medium" : "none"},
+        {key: "PROFILE", val: rs.profile_risk || 0, cls: (rs.profile_risk || 0) > 5 ? "severe" : (rs.profile_risk || 0) > 0 ? "medium" : "none"},
+        {key: "ROUTE", val: rs.route_risk || 0, cls: (rs.route_risk || 0) > 10 ? "severe" : (rs.route_risk || 0) > 5 ? "high" : (rs.route_risk || 0) > 0 ? "medium" : "none"},
+      ];
+      riskheatCard.innerHTML = '<div class="risk-heat-grid">' +
+        items.map(function(item) {
+          return '<div class="risk-heat-cell ' + item.cls + '">' +
+            '<div class="rh-label">' + item.key + '</div>' +
+            '<div class="rh-value">' + item.val + '</div></div>';
+        }).join("") +
+        '</div>' +
+        '<div class="small" style="margin-top:6px;">CTX=context window, TEMP=temperature, OUTPUT=output tokens, TIMEOUT=timeout, PROFILE=missing codex profile, ROUTE=not default-allowed</div>';
+    }
+
+    // Update route flow with horizontal pipeline
+    const routeflowCard = document.getElementById('models-routeflow-card');
+    if (routeflowCard && visual.route_flow) {
+      const flow = visual.route_flow;
+      const total = flow.reduce(function(sum, f) { return sum + (f.count || 0); }, 0) || 1;
+      const stageMap = {"VERIFIED": "verified", "RECOMMENDED": "recommended", "REQUIRES_REASON": "requires-reason", "BLOCKED": "blocked", "IDLE": "idle"};
+      const flowItems = flow.map(function(f) {
+        const cls = stageMap[f.state] || "idle";
+        const pct = Math.round((f.count || 0) / total * 100);
+        return '<div class="route-stage ' + cls + '" style="flex:' + (f.count || 0.5) + '" title="' + escapeHtml(f.label) + ': ' + (f.count || 0) + ' models (' + pct + '%)">' +
+          '<div class="rs-label">' + escapeHtml(f.state) + '</div>' +
+          '<div class="rs-count">' + (f.count || 0) + '</div>' +
+          '<div class="small" style="font-size:0.55rem; opacity:0.6;">' + pct + '%</div></div>';
+      }).join('');
+      routeflowCard.innerHTML = '<div class="route-pipeline">' + flowItems + '</div>' +
+        '<div class="small" style="margin-top:6px;">Visual recommendation only. Does not imply live route execution.</div>';
+    }
+
+    // Update asset badges with visual grid
+    const assetsCard = document.getElementById('models-assets-card');
+    if (assetsCard && visual.asset_badges) {
+      const badges = visual.asset_badges;
+      const items = badges.map(function(b) {
+        const confCls = b.confidence === "CONFIGURED" ? "value-ok" : (b.confidence === "OPERATOR_REPORTED" ? "value-warn" : "value-bad");
+        const confDot = b.confidence === "CONFIGURED" ? "ok" : (b.confidence === "OPERATOR_REPORTED" ? "warn" : "bad");
+        const costCls = b.cost_class === "free" || b.cost_class === "light" ? "value-ok" : (b.cost_class === "medium" ? "value-warn" : "value-bad");
+        return '<div class="asset-badge">' +
+          '<div class="ab-provider"><span class="health-dot ' + confDot + '" style="width:6px;height:6px;margin-right:4px;"></span>' + escapeHtml(b.provider) + '</div>' +
+          '<div class="ab-meta">' +
+          '<span class="' + confCls + '">' + escapeHtml(b.confidence) + '</span>' +
+          '<span>' + escapeHtml(b.surface) + '</span>' +
+          '<span class="' + costCls + '">' + escapeHtml(b.cost_class) + '</span>' +
+          '<span>' + escapeHtml(b.access_level) + '</span>' +
+          '</div></div>';
+      }).join("");
+      assetsCard.innerHTML = '<div class="asset-grid">' + items + '</div>' +
+        '<div class="small" style="margin-top:6px;">Total: ' + escapeHtml(String(badges.length)) + ' assets. Confidence source shown per provider. Pricing/quota are operator-reported, not product promises.</div>';
+    }
+  }function switchMode(mode) {
+    currentMode = mode;
+    document.querySelectorAll('.mode-switch-btn').forEach(function(btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-mode') === mode);
+    });
+    loadModelDashboard();
+  }
+
+  async function loadModelDashboard() {
+    try {
+      const r = await fetch("/api/models/dashboard?mode=" + currentMode + "&nocache=" + Date.now());
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      renderModelSummary(data);
+      renderModelLanes(data);
+      renderModelSettings(data);
+      renderVisualLayer(data);
+      const settingsSection = document.getElementById("models-settings-section");
+      if (settingsSection) settingsSection.style.display = data.mode === "business" ? "" : "none";
+    } catch (err) {
+      ["models-lanes-card", "models-settings-card"].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.innerHTML = '<div class="small" style="color:#f97373;">Failed to load model dashboard: ' + escapeHtml(err.message || "unknown") + "</div>";
+      });
+      var fb = document.getElementById("fleet-health-bar");
+      if (fb) fb.innerHTML = '<div class="small" style="color:#f97373;">Failed to load</div>';
+      var ms = document.getElementById("mode-strip");
+      if (ms) ms.innerHTML = '<div class="small" style="color:#f97373;">Failed to load</div>';
+    }
+  }
+
+  async function loadModelEdits() {
+    try {
+      const r = await fetch("/api/models/edit-receipts?nocache=" + Date.now());
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      renderModelEdits(data);
+    } catch (err) {
+      const el = document.getElementById("models-edits-card");
+      if (el) el.innerHTML = '<div class="small" style="color:#f97373;">Failed to load edit receipts: ' + escapeHtml(err.message || "unknown") + "</div>";
+    }
+  }
+
+  loadModelDashboard();
+  loadModelEdits();
+  setInterval(loadModelDashboard, 30000);
+  setInterval(loadModelEdits, 30000);
+
+  // ---- Asset Inventory & Provider Policy ----
+
+  function accessLevelClass(level) {
+    const v = (level || "").toString().toUpperCase();
+    if (v === "LOCAL_INCLUDED" || v === "CONFIGURED") return "value-ok";
+    if (v === "FREE_TIER_REPORTED" || v === "USER_SUBSCRIPTION") return "value-warn";
+    if (v === "METERED_API" || v === "BUSINESS_LICENSED") return "value-warn";
+    if (v === "ENTERPRISE_MANAGED") return "value-ok";
+    return "value-bad";
+  }
+
+  function confidenceClass(c) {
+    const v = (c || "").toString().toUpperCase();
+    if (v === "CONFIGURED" || v === "VERIFIED") return "value-ok";
+    if (v === "OPERATOR_REPORTED") return "value-warn";
+    if (v === "STALE") return "value-bad";
+    return "value-bad";
+  }
+
+  function renderAssetInventory(data) {
+    const card = document.getElementById("models-assets-card");
+    if (!card) return;
+    const assets = Array.isArray(data.assets) ? data.assets : [];
+    if (!assets.length) {
+      card.innerHTML = '<div class="small">No assets loaded.</div>';
+      return;
+    }
+
+    const items = assets.map((a) => {
+      const accCls = accessLevelClass(a.access_level);
+      const confCls = confidenceClass(a.confidence);
+      const costCls = a.cost_class === "free" ? "value-ok" : (a.cost_class === "light" ? "value-ok" : (a.cost_class === "medium" ? "value-warn" : "value-bad"));
+      return `<div class="list-item" style="margin-bottom:6px;">
+        <div class="card-row">
+          <div class="value mono" style="font-size:.8rem;">${escapeHtml(a.provider)}</div>
+          <span class="small ${accCls}">${escapeHtml(a.access_level)}</span>
+        </div>
+        <div class="card-row" style="margin-top:2px;">
+          <div><div class="label">Surface</div><div class="small">${escapeHtml(a.surface)}</div></div>
+          <div><div class="label">Cost</div><div class="small ${costCls}">${escapeHtml(a.cost_class)}</div></div>
+          <div><div class="label">Quota</div><div class="small">${escapeHtml(a.quota_class)}</div></div>
+          <div><div class="label">License</div><div class="small">${escapeHtml(a.license_scope)}</div></div>
+          <div><div class="label">Confidence</div><div class="small ${confCls}">${escapeHtml(a.confidence)}</div></div>
+        </div>
+        <div class="small" style="opacity:.7; margin-top:2px;">${escapeHtml(a.notes || "")}</div>
+      </div>`;
+    }).join("");
+
+    card.innerHTML = `<div class="list" style="max-height:none;">${items}</div>
+      <div class="small" style="margin-top:4px;">Total: ${escapeHtml(String(data.total_assets))} assets | Generated: ${escapeHtml(data.generated_at || "n/a")}</div>`;
+  }
+
+  function renderPolicySurfaces(data) {
+    const card = document.getElementById("models-policy-card");
+    if (!card) return;
+    const hm = data.home_mode || {};
+    const bm = data.business_mode || {};
+
+    function policyCard(mode, label) {
+      const maxCost = mode.max_cost_class || "?";
+      const costCls = maxCost === "free" || maxCost === "light" ? "value-ok" : (maxCost === "medium" ? "value-warn" : "value-bad");
+      const sensitiveCls = mode.sensitive_data_allowed ? "value-bad" : "value-ok";
+      const tiers = Array.isArray(mode.default_allowed_tiers) ? mode.default_allowed_tiers.join(", ") : "?";
+      const reasonTiers = Array.isArray(mode.require_explicit_route_reason_for_tiers) ? mode.require_explicit_route_reason_for_tiers.join(", ") : "?";
+      const blocked = Array.isArray(mode.blocked_providers) && mode.blocked_providers.length ? mode.blocked_providers.join(", ") : "none";
+      const restricted = Array.isArray(mode.restricted_providers) && mode.restricted_providers.length ? mode.restricted_providers.join(", ") : "none";
+
+      return `<div class="list-item" style="margin-bottom:8px;">
+        <div class="card-row">
+          <div class="value" style="font-size:.85rem;">${escapeHtml(label)}</div>
+          <span class="small">v${escapeHtml(mode.policy_version || "?")}</span>
+        </div>
+        <div class="small" style="opacity:.7; margin-bottom:4px;">${escapeHtml(mode.description || "")}</div>
+        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:4px;">
+          <div><div class="label">Max Cost</div><div class="small ${costCls}">${escapeHtml(maxCost)}</div></div>
+          <div><div class="label">Default Tiers</div><div class="small">${escapeHtml(tiers)}</div></div>
+          <div><div class="label">Reason Required</div><div class="small">Tiers ${escapeHtml(reasonTiers)}</div></div>
+          <div><div class="label">Sensitive Data</div><div class="small ${sensitiveCls}">${mode.sensitive_data_allowed ? "ALLOWED" : "BLOCKED"}</div></div>
+          <div><div class="label">Blocked Providers</div><div class="small">${escapeHtml(blocked)}</div></div>
+          <div><div class="label">Restricted</div><div class="small">${escapeHtml(restricted)}</div></div>
+        </div>
+        <div class="small" style="opacity:.5; margin-top:2px;">Audit: ${escapeHtml(mode.audit_logging || "?")} | Updated: ${escapeHtml(mode.last_updated || "?")}</div>
+      </div>`;
+    }
+
+    card.innerHTML = `<div class="list" style="max-height:none;">
+      ${policyCard(hm, "Home Mode (Personal)")}
+      ${policyCard(bm, "Business Mode (Admin Policy)")}
+    </div>`;
+  }
+
+  function renderRoutingEligibility(data) {
+    const card = document.getElementById("models-routing-card");
+    if (!card) return;
+    const eligibility = Array.isArray(data.eligibility) ? data.eligibility : [];
+    const tiers = Array.isArray(data.tier_definitions) ? data.tier_definitions : [];
+
+    if (!eligibility.length) {
+      card.innerHTML = '<div class="small">No routing eligibility data loaded.</div>';
+      return;
+    }
+
+    const tierHtml = tiers.map((t) => {
+      return `<span class="pill" title="${escapeHtml(t.use_cases || "")}">
+        <span class="pill-dot ${t.default_allowed ? "ok" : "warn"}"></span>
+        T${escapeHtml(String(t.tier))}: ${escapeHtml(t.name)}
+      </span>`;
+    }).join("");
+
+    const items = eligibility.map((e) => {
+      const homeCls = e.home_mode_eligible ? "value-ok" : "value-warn";
+      const bizCls = e.business_mode_eligible ? "value-ok" : "value-warn";
+      const reasonCls = e.requires_explicit_route_reason ? "value-warn" : "value-ok";
+      return `<div class="list-item" style="margin-bottom:4px;">
+        <div class="card-row">
+          <div class="mono" style="font-size:.75rem;">${escapeHtml(e.alias)}</div>
+          <span class="small">T${escapeHtml(String(e.tier))}</span>
+        </div>
+        <div class="card-row" style="margin-top:2px;">
+          <div><div class="label">Home</div><div class="small ${homeCls}">${e.home_mode_eligible ? "ELIGIBLE" : "RESTRICTED"}</div></div>
+          <div><div class="label">Business</div><div class="small ${bizCls}">${e.business_mode_eligible ? "ELIGIBLE" : "RESTRICTED"}</div></div>
+          <div><div class="label">Route Reason</div><div class="small ${reasonCls}">${e.requires_explicit_route_reason ? "REQUIRED" : "NOT REQUIRED"}</div></div>
+          <div><div class="label">Default</div><div class="small ${e.default_allowed ? "value-ok" : "value-bad"}">${e.default_allowed ? "YES" : "NO"}</div></div>
+          <div><div class="label">Write</div><div class="small ${e.write_allowed ? "value-ok" : "value-bad"}">${e.write_allowed ? "YES" : "NO"}</div></div>
+        </div>
+      </div>`;
+    }).join("");
+
+    card.innerHTML = `
+      <div class="pill-row" style="margin-bottom:8px;">${tierHtml}</div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:4px; margin-bottom:8px;">
+        <div><div class="label">Total Models</div><div class="value">${escapeHtml(String(data.total_models || 0))}</div></div>
+        <div><div class="label">Home Eligible</div><div class="value value-ok">${escapeHtml(String(data.home_eligible_count || 0))}</div></div>
+        <div><div class="label">Business Eligible</div><div class="value value-ok">${escapeHtml(String(data.business_eligible_count || 0))}</div></div>
+        <div><div class="label">Requires Reason</div><div class="value value-warn">${escapeHtml(String(data.requires_reason_count || 0))}</div></div>
+      </div>
+      <div class="list" style="max-height:none;">${items}</div>
+    `;
+  }
+
+  async function loadModelAssets() {
+    try {
+      const r = await fetch("/api/models/assets?nocache=" + Date.now());
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      renderAssetInventory(data);
+      renderPolicySurfaces(data);
+    } catch (err) {
+      ["models-assets-card", "models-policy-card"].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = '<div class="small" style="color:#f97373;">Failed to load: ' + escapeHtml(err.message || "unknown") + "</div>";
+      });
+    }
+  }
+
+  async function loadModelRouting() {
+    try {
+      const r = await fetch("/api/models/routing-eligibility?nocache=" + Date.now());
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      renderRoutingEligibility(data);
+    } catch (err) {
+      const el = document.getElementById("models-routing-card");
+      if (el) el.innerHTML = '<div class="small" style="color:#f97373;">Failed to load: ' + escapeHtml(err.message || "unknown") + "</div>";
+    }
+  }
+
+  loadModelAssets();
+
+
+
+  // ---- Asset Inventory & Provider Policy ----
+
+  function accessLevelClass(level) {
+    const v = (level || '').toString().toUpperCase();
+    if (v === 'LOCAL_INCLUDED' || v === 'CONFIGURED') return 'value-ok';
+    if (v === 'FREE_TIER_REPORTED' || v === 'USER_SUBSCRIPTION') return 'value-warn';
+    if (v === 'METERED_API' || v === 'BUSINESS_LICENSED') return 'value-warn';
+    if (v === 'ENTERPRISE_MANAGED') return 'value-ok';
+    return 'value-bad';
+  }
+
+  function confidenceClass(c) {
+    const v = (c || '').toString().toUpperCase();
+    if (v === 'CONFIGURED' || v === 'VERIFIED') return 'value-ok';
+    if (v === 'OPERATOR_REPORTED') return 'value-warn';
+    if (v === 'STALE') return 'value-bad';
+    return 'value-bad';
+  }
+
+  function renderAssetInventory(data) {
+    const card = document.getElementById('models-assets-card');
+    if (!card) return;
+    const assets = Array.isArray(data.assets) ? data.assets : [];
+    if (!assets.length) {
+      card.innerHTML = '<div class=\'small\'>No assets loaded.</div>';
+      return;
+    }
+    const items = assets.map((a) => {
+      const accCls = accessLevelClass(a.access_level);
+      const confCls = confidenceClass(a.confidence);
+      const costCls = a.cost_class === 'free' ? 'value-ok' : (a.cost_class === 'light' ? 'value-ok' : (a.cost_class === 'medium' ? 'value-warn' : 'value-bad'));
+      return '<div class=\'list-item\' style=\'margin-bottom:6px;\'>' +
+        '<div class=\'card-row\'><div class=\'value mono\' style=\'font-size:.8rem;\'>' + escapeHtml(a.provider) + '</div>' +
+        '<span class=\'small ' + accCls + '\'>' + escapeHtml(a.access_level) + '</span></div>' +
+        '<div class=\'card-row\' style=\'margin-top:2px;\'>' +
+        '<div><div class=\'label\'>Surface</div><div class=\'small\'>' + escapeHtml(a.surface) + '</div></div>' +
+        '<div><div class=\'label\'>Cost</div><div class=\'small ' + costCls + '\'>' + escapeHtml(a.cost_class) + '</div></div>' +
+        '<div><div class=\'label\'>Quota</div><div class=\'small\'>' + escapeHtml(a.quota_class) + '</div></div>' +
+        '<div><div class=\'label\'>License</div><div class=\'small\'>' + escapeHtml(a.license_scope) + '</div></div>' +
+        '<div><div class=\'label\'>Confidence</div><div class=\'small ' + confCls + '\'>' + escapeHtml(a.confidence) + '</div></div></div>' +
+        '<div class=\'small\' style=\'opacity:.7; margin-top:2px;\'>' + escapeHtml(a.notes || '') + '</div></div>';
+    }).join('');
+    card.innerHTML = '<div class=\'list\' style=\'max-height:none;\'>' + items + '</div>' +
+      '<div class=\'small\' style=\'margin-top:4px;\'>Total: ' + escapeHtml(String(data.total_assets)) + ' assets | Generated: ' + escapeHtml(data.generated_at || 'n/a') + '</div>';
+  }
+
+  function renderPolicySurfaces(data) {
+    const card = document.getElementById('models-policy-card');
+    if (!card) return;
+    const hm = data.home_mode || {};
+    const bm = data.business_mode || {};
+    function policyCard(mode, label) {
+      const maxCost = mode.max_cost_class || '?';
+      const costCls = maxCost === 'free' || maxCost === 'light' ? 'value-ok' : (maxCost === 'medium' ? 'value-warn' : 'value-bad');
+      const sensitiveCls = mode.sensitive_data_allowed ? 'value-bad' : 'value-ok';
+      const tiers = Array.isArray(mode.default_allowed_tiers) ? mode.default_allowed_tiers.join(', ') : '?';
+      const reasonTiers = Array.isArray(mode.require_explicit_route_reason_for_tiers) ? mode.require_explicit_route_reason_for_tiers.join(', ') : '?';
+      const blocked = Array.isArray(mode.blocked_providers) && mode.blocked_providers.length ? mode.blocked_providers.join(', ') : 'none';
+      const restricted = Array.isArray(mode.restricted_providers) && mode.restricted_providers.length ? mode.restricted_providers.join(', ') : 'none';
+      return '<div class=\'list-item\' style=\'margin-bottom:8px;\'>' +
+        '<div class=\'card-row\'><div class=\'value\' style=\'font-size:.85rem;\'>' + escapeHtml(label) + '</div>' +
+        '<span class=\'small\'>v' + escapeHtml(mode.policy_version || '?') + '</span></div>' +
+        '<div class=\'small\' style=\'opacity:.7; margin-bottom:4px;\'>' + escapeHtml(mode.description || '') + '</div>' +
+        '<div style=\'display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:4px;\'>' +
+        '<div><div class=\'label\'>Max Cost</div><div class=\'small ' + costCls + '\'>' + escapeHtml(maxCost) + '</div></div>' +
+        '<div><div class=\'label\'>Default Tiers</div><div class=\'small\'>' + escapeHtml(tiers) + '</div></div>' +
+        '<div><div class=\'label\'>Reason Required</div><div class=\'small\'>Tiers ' + escapeHtml(reasonTiers) + '</div></div>' +
+        '<div><div class=\'label\'>Sensitive Data</div><div class=\'small ' + sensitiveCls + '\'>' + (mode.sensitive_data_allowed ? 'ALLOWED' : 'BLOCKED') + '</div></div>' +
+        '<div><div class=\'label\'>Blocked Providers</div><div class=\'small\'>' + escapeHtml(blocked) + '</div></div>' +
+        '<div><div class=\'label\'>Restricted</div><div class=\'small\'>' + escapeHtml(restricted) + '</div></div></div>' +
+        '<div class=\'small\' style=\'opacity:.5; margin-top:2px;\'>Audit: ' + escapeHtml(mode.audit_logging || '?') + ' | Updated: ' + escapeHtml(mode.last_updated || '?') + '</div></div>';
+    }
+    card.innerHTML = '<div class=\'list\' style=\'max-height:none;\'>' +
+      policyCard(hm, 'Home Mode (Personal)') +
+      policyCard(bm, 'Business Mode (Admin Policy)') + '</div>';
+  }
+
+  function renderRoutingEligibility(data) {
+    const card = document.getElementById('models-routing-card');
+    if (!card) return;
+    const eligibility = Array.isArray(data.eligibility) ? data.eligibility : [];
+    const tiers = Array.isArray(data.tier_definitions) ? data.tier_definitions : [];
+    if (!eligibility.length) {
+      card.innerHTML = '<div class=\'small\'>No routing eligibility data loaded.</div>';
+      return;
+    }
+    const tierHtml = tiers.map((t) => {
+      return '<span class=\'pill\' title=\'' + escapeHtml(t.use_cases || '') + '\'>' +
+        '<span class=\'pill-dot ' + (t.default_allowed ? 'ok' : 'warn') + '\'></span>' +
+        'T' + escapeHtml(String(t.tier)) + ': ' + escapeHtml(t.name) + '</span>';
+    }).join('');
+    const items = eligibility.map((e) => {
+      const homeCls = e.home_mode_eligible ? 'value-ok' : 'value-warn';
+      const bizCls = e.business_mode_eligible ? 'value-ok' : 'value-warn';
+      const reasonCls = e.requires_explicit_route_reason ? 'value-warn' : 'value-ok';
+      return '<div class=\'list-item\' style=\'margin-bottom:4px;\'>' +
+        '<div class=\'card-row\'><div class=\'mono\' style=\'font-size:.75rem;\'>' + escapeHtml(e.alias) + '</div>' +
+        '<span class=\'small\'>T' + escapeHtml(String(e.tier)) + '</span></div>' +
+        '<div class=\'card-row\' style=\'margin-top:2px;\'>' +
+        '<div><div class=\'label\'>Home</div><div class=\'small ' + homeCls + '\'>' + (e.home_mode_eligible ? 'ELIGIBLE' : 'RESTRICTED') + '</div></div>' +
+        '<div><div class=\'label\'>Business</div><div class=\'small ' + bizCls + '\'>' + (e.business_mode_eligible ? 'ELIGIBLE' : 'RESTRICTED') + '</div></div>' +
+        '<div><div class=\'label\'>Route Reason</div><div class=\'small ' + reasonCls + '\'>' + (e.requires_explicit_route_reason ? 'REQUIRED' : 'NOT REQUIRED') + '</div></div>' +
+        '<div><div class=\'label\'>Default</div><div class=\'small ' + (e.default_allowed ? 'value-ok' : 'value-bad') + '\'>' + (e.default_allowed ? 'YES' : 'NO') + '</div></div>' +
+        '<div><div class=\'label\'>Write</div><div class=\'small ' + (e.write_allowed ? 'value-ok' : 'value-bad') + '\'>' + (e.write_allowed ? 'YES' : 'NO') + '</div></div></div></div>';
+    }).join('');
+    card.innerHTML = '<div class=\'pill-row\' style=\'margin-bottom:8px;\'>' + tierHtml + '</div>' +
+      '<div style=\'display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:4px; margin-bottom:8px;\'>' +
+      '<div><div class=\'label\'>Total Models</div><div class=\'value\'>' + escapeHtml(String(data.total_models || 0)) + '</div></div>' +
+      '<div><div class=\'label\'>Home Eligible</div><div class=\'value value-ok\'>' + escapeHtml(String(data.home_eligible_count || 0)) + '</div></div>' +
+      '<div><div class=\'label\'>Business Eligible</div><div class=\'value value-ok\'>' + escapeHtml(String(data.business_eligible_count || 0)) + '</div></div>' +
+      '<div><div class=\'label\'>Requires Reason</div><div class=\'value value-warn\'>' + escapeHtml(String(data.requires_reason_count || 0)) + '</div></div></div>' +
+      '<div class=\'list\' style=\'max-height:none;\'>' + items + '</div>';
+  }
+
+  async function loadModelAssets() {
+    try {
+      const r = await fetch('/api/models/assets?nocache=' + Date.now());
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      renderAssetInventory(data);
+      renderPolicySurfaces(data);
+    } catch (err) {
+      ['models-assets-card', 'models-policy-card'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = '<div class=\'small\' style=\'color:#f97373;\'>Failed to load: ' + escapeHtml(err.message || 'unknown') + '</div>';
+      });
+    }
+  }
+
+  async function loadModelRouting() {
+    try {
+      const r = await fetch('/api/models/routing-eligibility?nocache=' + Date.now());
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      renderRoutingEligibility(data);
+    } catch (err) {
+      const el = document.getElementById('models-routing-card');
+      if (el) el.innerHTML = '<div class=\'small\' style=\'color:#f97373;\'>Failed to load: ' + escapeHtml(err.message || 'unknown') + '</div>';
+    }
+  }
+
+  loadModelAssets();
+  loadModelRouting();
+  setInterval(loadModelAssets, 30000);
+  setInterval(loadModelRouting, 30000);
+
+  // ---- Wrapper Registry ----
+
+  function renderWrapperRegistry(data) {
+    const card = document.getElementById("models-wrappers-card");
+    if (!card) return;
+    const active = Array.isArray(data.active_wrappers) ? data.active_wrappers : [];
+    const catalog = Array.isArray(data.catalog_wrappers) ? data.catalog_wrappers : [];
+    const summary = data.summary || {};
+
+    function wrapperBadge(w) {
+      var cls = w.class === "PREFERRED" ? "preferred" : (w.class === "SUPPORTED" ? "supported" : (w.class === "OPTIONAL" ? "optional" : "custom"));
+      var evCls = w.evidence_status === "CONFIGURED" ? "configured" : (w.evidence_status === "UNKNOWN" ? "unknown" : "not-configured");
+      var caps = [];
+      if (w.supports_read) caps.push("R");
+      if (w.supports_write) caps.push("W");
+      if (w.supports_local) caps.push("LCL");
+      if (w.supports_cloud) caps.push("CLD");
+      return '<div class="wrapper-row">' +
+        '<div class="wr-icon ' + cls + '">' + escapeHtml(w.icon_key || w.short_label || "?") + '</div>' +
+        '<div class="wr-info"><div class="wr-name">' + escapeHtml(w.label) + '</div>' +
+        '<div class="wr-meta">' + (caps.length ? caps.join(" | ") : "") + (w.launcher_path ? ' | ' + escapeHtml(w.shortcut_prefix || "") : '') + '</div></div>' +
+        '<span class="wr-chip ' + evCls + '">' + escapeHtml(w.evidence_status) + '</span>' +
+        '</div>';
+    }
+
+    var html = '<div style="margin-bottom:8px;">';
+    html += '<div class="card-row"><div class="label">Active Wrappers (' + active.length + ')</div>' +
+      '<div class="small">Configured: ' + summary.configured + ' | Detected: ' + summary.detected + ' | Enabled: ' + summary.enabled + '</div></div>';
+    html += '<div style="display:flex; flex-direction:column; gap:4px;">' + active.map(wrapperBadge).join("") + '</div>';
+    html += '</div>';
+
+    html += '<details><summary><span class="summary-label"><span class="small">Catalog Wrappers (' + catalog.length + ')</span></span><span class="summary-chevron">></span></summary>';
+    html += '<div class="details-body"><div style="display:flex; flex-direction:column; gap:4px;">' + catalog.map(wrapperBadge).join("") + '</div></div></details>';
+
+    html += '<div class="small" style="margin-top:6px;">Launch is not yet wired. Wrapper/model compatibility requires evidence — unknown remains unknown.</div>';
+
+    card.innerHTML = html;
+  }
+
+  async function loadWrapperRegistry() {
+    try {
+      const r = await fetch("/api/models/wrappers?nocache=" + Date.now());
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      renderWrapperRegistry(data);
+    } catch (err) {
+      const el = document.getElementById("models-wrappers-card");
+      if (el) el.innerHTML = '<div class="small" style="color:#f97373;">Failed to load wrapper registry: ' + escapeHtml(err.message || "unknown") + "</div>";
+    }
+  }
+
+  loadWrapperRegistry();
+  setInterval(loadWrapperRegistry, 30000);
+
+  // ---- Dashboard Settings Drawer ----
+  const WRAPPER_DEFS = [
+    { id: "ollama_direct", label: "Ollama Direct", short: "Ol", iconClass: "preferred", checked: true, chip: "CONFIGURED", chipClass: "configured", meta: "http://127.0.0.1:11434" },
+    { id: "codex", label: "Codex", short: "Cx", iconClass: "preferred", checked: true, chip: "CONFIGURED", chipClass: "configured", meta: "ollama-launch profile" },
+    { id: "claude_code", label: "Claude Code", short: "Cl", iconClass: "preferred", checked: true, chip: "CONFIGURED", chipClass: "configured", meta: "ollama-launch proxy :3456" },
+    { id: "openclaw", label: "OpenClaw", short: "OC", iconClass: "supported", checked: true, chip: "UNKNOWN", chipClass: "unknown", meta: "ollama-launch" },
+    { id: "copilot", label: "Copilot", short: "CP", iconClass: "supported", checked: false, chip: "UNKNOWN", chipClass: "unknown", meta: "github-servers" },
+    { id: "gemini", label: "Gemini", short: "Gm", iconClass: "supported", checked: false, chip: "DEFERRED", chipClass: "deferred", meta: "Model selection deferred" },
+    { id: "opencode", label: "OpenCode", short: "OCd", iconClass: "optional", checked: false, chip: "NOT PREFERRED", chipClass: "not-configured", meta: "Ecosystem wrapper" },
+    { id: "aider", label: "Aider", short: "Ai", iconClass: "optional", checked: false, chip: "NOT CONFIGURED", chipClass: "not-configured", meta: "Ecosystem wrapper" },
+    { id: "continue", label: "Continue", short: "Ct", iconClass: "optional", checked: false, chip: "NOT CONFIGURED", chipClass: "not-configured", meta: "Ecosystem wrapper" },
+    { id: "cursor", label: "Cursor", short: "Cu", iconClass: "optional", checked: false, chip: "NOT CONFIGURED", chipClass: "not-configured", meta: "agent.cmd" },
+    { id: "cline_roo", label: "Cline / Roo", short: "CR", iconClass: "optional", checked: false, chip: "NOT CONFIGURED", chipClass: "not-configured", meta: "Ecosystem wrapper" },
+    { id: "goose", label: "Goose", short: "Gs", iconClass: "optional", checked: false, chip: "NOT CONFIGURED", chipClass: "not-configured", meta: "Ecosystem wrapper" },
+    { id: "custom_wrapper", label: "Custom Wrapper", short: "+", iconClass: "custom", checked: false, chip: "PLACEHOLDER", chipClass: "placeholder", meta: "Add your own wrapper" }
+  ];
+
+  function renderWrappers() {
+    const list = document.getElementById("wrapper-list");
+    if (!list) return;
+    list.innerHTML = WRAPPER_DEFS.map(function(w) {
+      return '<div class="wrapper-row">' +
+        '<input type="checkbox" class="wr-checkbox" id="wr-' + w.id + '" ' + (w.checked ? "checked" : "") + ' onchange="onWrapperToggle(\'' + w.id + '\', this.checked)">' +
+        '<div class="wr-icon ' + w.iconClass + '">' + w.short + '</div>' +
+        '<div class="wr-info"><div class="wr-name">' + escapeHtml(w.label) + '</div><div class="wr-meta">' + escapeHtml(w.meta) + '</div></div>' +
+        '<span class="wr-chip ' + w.chipClass + '">' + w.chip + '</span>' +
+        '</div>';
+    }).join("");
+  }
+
+  function onWrapperToggle(id, checked) {
+    // UI-only for this phase. Persistence is a future feature.
+    console.log("Wrapper toggle: " + id + " -> " + (checked ? "enabled" : "disabled"));
+  }
+
+  function toggleSettings() {
+    const overlay = document.getElementById("settings-overlay");
+    const drawer = document.getElementById("settings-drawer");
+    if (!overlay || !drawer) return;
+    const opening = !drawer.classList.contains("open");
+    overlay.classList.toggle("open", opening);
+    drawer.classList.toggle("open", opening);
+    if (opening) renderWrappers();
+  }</script>
+  
+  <!-- Dashboard Settings Drawer -->
+  <div class="settings-overlay" id="settings-overlay" onclick="toggleSettings()"></div>
+  <div class="settings-drawer" id="settings-drawer">
+    <div class="settings-drawer-header">
+      <div class="sd-title">⚙ Dashboard Settings</div>
+      <button class="sd-close" onclick="toggleSettings()">✕</button>
+    </div>
+    <div class="settings-drawer-body">
+      <!-- Displayed Wrappers -->
+      <div class="settings-section">
+        <div class="settings-section-header">
+          <span>Displayed Wrappers</span>
+          <span class="ss-badge">ACTIVE</span>
+        </div>
+        <div class="settings-section-note">
+          Choose which wrappers appear on the Models board. Preferred wrappers are shown by default.
+          Optional wrappers are catalog-only until enabled. Persistence and launch are future features.
+        </div>
+        <div id="wrapper-list"></div>
+      </div>
+
+      <!-- Future Sections -->
+      <div class="settings-section">
+        <div class="settings-section-header">
+          <span>Appearance</span>
+          <span class="ss-badge future">FUTURE</span>
+        </div>
+        <div class="future-section-placeholder">
+          <span class="fsp-icon">🎨</span>
+          <span>Light/dark schemes, reduced motion, card density — coming in a future pass.</span>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-header">
+          <span>Profiles</span>
+          <span class="ss-badge future">FUTURE</span>
+        </div>
+        <div class="future-section-placeholder">
+          <span class="fsp-icon">👤</span>
+          <span>Home, Business, RetroFuse, Modular profile switching — coming in a future pass.</span>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-header">
+          <span>Wrapper Catalog</span>
+          <span class="ss-badge future">FUTURE</span>
+        </div>
+        <div class="future-section-placeholder">
+          <span class="fsp-icon">🔌</span>
+          <span>Full wrapper registry with evidence packets, validation status, and launch profiles — coming in a future pass.</span>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-header">
+          <span>Provider Assets</span>
+          <span class="ss-badge future">FUTURE</span>
+        </div>
+        <div class="future-section-placeholder">
+          <span class="fsp-icon">🏢</span>
+          <span>Provider asset management, access levels, cost classes — coming in a future pass.</span>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-header">
+          <span>Model Settings Baselines</span>
+          <span class="ss-badge future">FUTURE</span>
+        </div>
+        <div class="future-section-placeholder">
+          <span class="fsp-icon">⚡</span>
+          <span>Default overrides, explicit settings, output ceilings — coming in a future pass.</span>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-header">
+          <span>Launch Profiles</span>
+          <span class="ss-badge future">FUTURE</span>
+        </div>
+        <div class="future-section-placeholder">
+          <span class="fsp-icon">🚀</span>
+          <span>One-click wrapper launch, workspace mapping, authority levels — coming in a future pass.</span>
+        </div>
+      </div>
+    </div>
+  </div></body>
+</html>
+"""
+
+
+@app.get("/", response_class=HTMLResponse)
+def index() -> HTMLResponse:
+    if TEMPLATE_INDEX.exists():
+        try:
+            return HTMLResponse(TEMPLATE_INDEX.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            pass
+    return HTMLResponse(INDEX_HTML)
+
+
+
+
+@app.get("/health")
+def health() -> JSONResponse:
+    return JSONResponse({"status": "ok", "service": "ops-dashboard", "version": APP_VERSION})
+@app.get("/api/latest")
+def api_latest() -> JSONResponse:
+    snap = _build_latest_snapshot()
+    return JSONResponse(snap)
+
+
+
+@app.get("/api/orchestrator")
+def api_orchestrator() -> JSONResponse:
+    return JSONResponse(_build_orchestrator_snapshot())
+
+
+@app.get("/api/planes/registry")
+def api_planes_registry() -> JSONResponse:
+    return JSONResponse(_build_planes_registry())
+
+
+@app.get("/api/project-board")
+def api_project_board() -> JSONResponse:
+    return JSONResponse(_build_project_board())
+
+
+@app.get("/api/workers/status")
+def api_workers_status() -> JSONResponse:
+    return JSONResponse(_build_workers_status())
+
+
+@app.get("/api/worker-events/summary")
+def api_worker_events_summary() -> JSONResponse:
+    return JSONResponse(_build_worker_events_summary())
+
+
+@app.get("/api/apps/dailybundle")
+def api_apps_dailybundle() -> JSONResponse:
+    return JSONResponse(_build_dailybundle_app_snapshot())
+
+
+@app.get("/api/bolt")
+def api_bolt() -> JSONResponse:
+    return JSONResponse(_build_bolt_snapshot())
+
+
+@app.get("/api/smc/wrc-live-status")
+def api_smc_wrc_live_status():
+    return JSONResponse(_build_smc_wrc_live_status())
+
+
+@app.post("/api/bolt/revalidate-safepoint")
+def api_bolt_revalidate_safepoint() -> JSONResponse:
+    result = _run_bolt_safepoint_validator()
+    status_code = 200 if result.get("ok") else 500
+    return JSONResponse(result, status_code=status_code)
+
+@app.get("/api/models/dashboard")
+def api_models_dashboard(mode: str = "home") -> JSONResponse:
+    return JSONResponse(build_mode_aware_dashboard(mode))
+
+
+@app.get("/api/models/edit-receipts")
+def api_models_edit_receipts() -> JSONResponse:
+    return JSONResponse(list_edit_receipts())
+
+
+@app.post("/api/models/edit-apply")
+def api_models_edit_apply() -> JSONResponse:
+    from fastapi import Request
+    import asyncio
+    async def _read():
+        req = Request(scope={"type": "http"})
+        body = await req.json()
+        return body
+    # For now, return a stub — governed edit apply will be implemented in v0.3
+    return JSONResponse({
+        "ok": False,
+        "error": "Governed edit apply is not yet implemented. Use the dashboard for read-only visibility.",
+        "note": "Edit receipts are generated for tracking. Apply requires explicit operator approval.",
+    })
+
+@app.get("/api/models/routing-eligibility")
+def api_models_routing_eligibility() -> JSONResponse:
+    return JSONResponse(build_routing_eligibility())
+
+
+@app.get("/api/models/assets")
+def api_models_assets() -> JSONResponse:
+    return JSONResponse(build_asset_inventory())
+
+
+@app.get("/api/models/wrappers")
+def api_models_wrappers() -> JSONResponse:
+    return JSONResponse(build_wrapper_registry())
+
+
+
+
+
+
+

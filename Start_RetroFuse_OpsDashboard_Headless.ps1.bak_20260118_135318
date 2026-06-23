@@ -1,0 +1,8 @@
+﻿$ErrorActionPreference = 'Stop'
+$dashRoot = 'D:\RETROFUSE_OPS\Dashboard'
+$venvPy  = Join-Path $dashRoot '.venv\Scripts\python.exe'
+if(!(Test-Path $venvPy)){ throw 'Dashboard venv python not found: ' + $venvPy }
+
+Set-Location $dashRoot
+
+& $venvPy -m uvicorn server:app --host 127.0.0.1 --port 8101

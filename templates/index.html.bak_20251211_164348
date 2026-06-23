@@ -1,0 +1,428 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>RetroFuse OPS Dashboard v1.3</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            margin: 0;
+            padding: 16px;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #050816;
+            color: #e5e7eb;
+        }
+        .page {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        h1 {
+            font-size: 1.6rem;
+            margin-bottom: 0.25rem;
+        }
+        .subtitle {
+            font-size: 0.9rem;
+            color: #9ca3af;
+            margin-bottom: 1.25rem;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 12px;
+        }
+        .card {
+            background: radial-gradient(circle at top left, #111827, #020617);
+            border-radius: 12px;
+            padding: 10px 12px;
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            box-shadow: 0 10px 25px rgba(15, 23, 42, 0.8);
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+        }
+        .card-title {
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+        .pill {
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 0.7rem;
+            border: 1px solid rgba(148, 163, 184, 0.4);
+        }
+        .pill-ok {
+            background: rgba(34, 197, 94, 0.1);
+            color: #4ade80;
+            border-color: rgba(34, 197, 94, 0.5);
+        }
+        .pill-warn {
+            background: rgba(234, 179, 8, 0.1);
+            color: #facc15;
+            border-color: rgba(234, 179, 8, 0.5);
+        }
+        .pill-bad {
+            background: rgba(248, 113, 113, 0.1);
+            color: #fca5a5;
+            border-color: rgba(248, 113, 113, 0.5);
+        }
+        .label {
+            font-size: 0.75rem;
+            color: #9ca3af;
+        }
+        .value {
+            font-size: 0.78rem;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+        }
+        .muted {
+            color: #6b7280;
+            font-size: 0.8rem;
+        }
+        .badge-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+        .badge {
+            padding: 2px 8px;
+            border-radius: 999px;
+            border: 1px solid rgba(148, 163, 184, 0.35);
+            font-size: 0.7rem;
+            color: #d1d5db;
+        }
+        .section-title {
+            font-size: 0.85rem;
+            font-weight: 500;
+            margin-top: 4px;
+            margin-bottom: 2px;
+            color: #e5e7eb;
+        }
+        .list {
+            font-size: 0.78rem;
+            margin: 0;
+            padding-left: 14px;
+        }
+        .list li {
+            margin-bottom: 1px;
+        }
+
+        /* Collapsible / long-field styling */
+        .collapse-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 6px;
+        }
+        .collapse-title {
+            font-size: 0.8rem;
+            color: #e5e7eb;
+        }
+        .collapse-toggle {
+            border-radius: 999px;
+            border: 1px solid rgba(148, 163, 184, 0.4);
+            background: rgba(15, 23, 42, 0.9);
+            color: #e5e7eb;
+            font-size: 0.7rem;
+            padding: 2px 8px;
+            cursor: pointer;
+        }
+        .collapse-toggle:hover {
+            background: rgba(30, 64, 175, 0.7);
+        }
+        .collapsible {
+            position: relative;
+            margin-top: 4px;
+        }
+        .collapsible-inner {
+            font-size: 0.75rem;
+            padding: 4px 6px;
+            background: rgba(15, 23, 42, 0.8);
+            border-radius: 8px;
+            border: 1px solid rgba(55, 65, 81, 0.8);
+            word-wrap: break-word;
+            white-space: pre-wrap;
+        }
+        .collapsible.collapsed .collapsible-inner {
+            max-height: 120px;
+            overflow: hidden;
+        }
+        .collapsible.collapsed::after {
+            content: "";
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            height: 32px;
+            background: linear-gradient(to bottom, rgba(15,23,42,0), rgba(15,23,42,0.98));
+            border-radius: 0 0 8px 8px;
+            pointer-events: none;
+        }
+        .footer {
+            margin-top: 14px;
+            font-size: 0.7rem;
+            color: #6b7280;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+        }
+        .footer span {
+            white-space: nowrap;
+        }
+        .footer .left {
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .footer .right {
+            text-align: right;
+        }
+        @media (max-width: 640px) {
+            body { padding: 10px; }
+            .grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+    <h1>RetroFuse OPS Dashboard</h1>
+    <div class="subtitle">
+        v1.3  RFCC snapshot view. Data source: latest DailyCheck JSON.
+    </div>
+
+    <div class="grid">
+
+        <!-- RFCC Node -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">RFCC Node</div>
+                <div class="pill pill-ok">online</div>
+            </div>
+            <div class="label">OPS Root</div>
+            <div class="value">
+                {{ ops_root or "unknown" }}
+            </div>
+        </div>
+
+        <!-- Bolt RC1 -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">Bolt RC1</div>
+                {% if rc1 and rc1.status == "running" %}
+                    <div class="pill pill-ok">running</div>
+                {% else %}
+                    <div class="pill pill-bad">not running</div>
+                {% endif %}
+            </div>
+
+            {% if rc1 and rc1.status == "running" %}
+                <div class="label">PIDs</div>
+                <div class="value">
+                    {% if rc1.process_id %}
+                        {{ rc1.process_id }}
+                    {% else %}
+                        n/a
+                    {% endif %}
+                </div>
+
+                {% if rc1.command_line %}
+                <div class="collapse-header">
+                    <div class="collapse-title">Command line</div>
+                    <button class="collapse-toggle" data-target="rc1-cmd">Expand</button>
+                </div>
+                <div id="rc1-cmd" class="collapsible collapsed">
+                    <div class="collapsible-inner">
+                        {{ "\n".join(rc1.command_line) }}
+                    </div>
+                </div>
+                {% else %}
+                    <div class="muted">No command-line captured.</div>
+                {% endif %}
+            {% else %}
+                <div class="muted">RC1 not detected in the last snapshot.</div>
+            {% endif %}
+        </div>
+
+        <!-- Bolt RC3 -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">Bolt RC3</div>
+                {% if rc3 and rc3.status == "running" %}
+                    <div class="pill pill-ok">running</div>
+                {% else %}
+                    <div class="pill pill-warn">inactive</div>
+                {% endif %}
+            </div>
+
+            {% if rc3 and rc3.status == "running" %}
+                <div class="label">Status</div>
+                <div class="value">
+                    PID(s): {{ rc3.process_id or "n/a" }}
+                </div>
+
+                {% if rc3.command_line %}
+                <div class="collapse-header">
+                    <div class="collapse-title">Command line</div>
+                    <button class="collapse-toggle" data-target="rc3-cmd">Expand</button>
+                </div>
+                <div id="rc3-cmd" class="collapsible collapsed">
+                    <div class="collapsible-inner">
+                        {{ "\n".join(rc3.command_line) }}
+                    </div>
+                </div>
+                {% endif %}
+            {% else %}
+                <div class="muted">RC3 not detected in the last snapshot.</div>
+            {% endif %}
+        </div>
+
+        <!-- GPU Pipeline -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">GPU Pipeline</div>
+                {% if gpu_pipeline and gpu_pipeline.gpu_process_count %}
+                    <div class="pill pill-ok">{{ gpu_pipeline.gpu_process_count }} process(es)</div>
+                {% else %}
+                    <div class="pill pill-warn">no gpu info</div>
+                {% endif %}
+            </div>
+
+            {% if gpu_pipeline and gpu_pipeline.sample_gpu_cmd %}
+                <div class="collapse-header">
+                    <div class="collapse-title">Sample GPU command-line</div>
+                    <button class="collapse-toggle" data-target="gpu-cmd">Expand</button>
+                </div>
+                <div id="gpu-cmd" class="collapsible collapsed">
+                    <div class="collapsible-inner">
+                        {{ gpu_pipeline.sample_gpu_cmd }}
+                    </div>
+                </div>
+            {% else %}
+                <div class="muted">No GPU command-line captured.</div>
+            {% endif %}
+        </div>
+
+        <!-- Storage -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">Storage</div>
+                <div class="pill pill-ok">disks</div>
+            </div>
+            {% if disks %}
+                <ul class="list">
+                {% for d in disks %}
+                    <li>
+                        <span class="label">Drive {{ d.name }}:</span>
+                        <span class="value">
+                            used {{ "{:.1f}".format(d.used_bytes / (1024*1024*1024)) }} GB /
+                            total {{ "{:.1f}".format(d.total_bytes / (1024*1024*1024)) }} GB
+                        </span>
+                    </li>
+                {% endfor %}
+                </ul>
+            {% else %}
+                <div class="muted">No disk data in snapshot.</div>
+            {% endif %}
+        </div>
+
+        <!-- SAFEPOINTS -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">SAFEPOINTs</div>
+                <div class="pill pill-ok">engine</div>
+            </div>
+
+            {% if safepoints %}
+                <div class="section-title">Roots</div>
+                <ul class="list">
+                {% for s in safepoints %}
+                    <li>
+                        {{ s.root_path }}  {{ s.zip_count or 0 }} zip(s)
+                    </li>
+                {% endfor %}
+                </ul>
+
+                {% set latest = safepoints[0].latest_zip if safepoints[0] and safepoints[0].latest_zip else None %}
+                {% if latest %}
+                    <div class="section-title">Latest</div>
+                    <div class="value">
+                        {{ latest.name }}<br>
+                        {{ latest.full_path }}
+                    </div>
+                {% endif %}
+            {% else %}
+                <div class="muted">No SAFEPOINT data found.</div>
+            {% endif %}
+        </div>
+
+        <!-- Alpha Capture -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">Alpha Capture</div>
+                {% if alpha and alpha.exists %}
+                    <div class="pill pill-ok">online</div>
+                {% else %}
+                    <div class="pill pill-warn">offline</div>
+                {% endif %}
+            </div>
+            {% if alpha and alpha.exists %}
+                <div class="label">Path</div>
+                <div class="value">{{ alpha.path }}</div>
+                <div class="label">Files (last 24h)</div>
+                <div class="value">{{ alpha.files_24h or 0 }}</div>
+            {% else %}
+                <div class="muted">Alpha capture directory not found.</div>
+            {% endif %}
+        </div>
+
+    </div>
+
+    <div class="footer">
+        <div class="left">
+            Data: {{ snapshot_name or "latest DailyCheck" }}
+        </div>
+        <div class="right">
+            Snapshot time: {{ snapshot_time or "unknown" }}
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    var toggles = document.querySelectorAll(".collapse-toggle");
+    toggles.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            var targetId = btn.getAttribute("data-target");
+            if (!targetId) return;
+            var block = document.getElementById(targetId);
+            if (!block) return;
+
+            var isCollapsed = block.classList.contains("collapsed");
+            if (isCollapsed) {
+                block.classList.remove("collapsed");
+                btn.textContent = "Collapse";
+            } else {
+                block.classList.add("collapsed");
+                btn.textContent = "Expand";
+            }
+        });
+
+        // Start collapsed by default
+        var targetId = btn.getAttribute("data-target");
+        var block = document.getElementById(targetId);
+        if (block && !block.classList.contains("collapsed")) {
+            block.classList.add("collapsed");
+        }
+    });
+});
+</script>
+
+</body>
+</html>

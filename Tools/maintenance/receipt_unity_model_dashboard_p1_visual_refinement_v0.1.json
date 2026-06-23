@@ -1,0 +1,10 @@
+{
+  "receipt_type": "unity_model_dashboard_p1_visual_refinement",
+  "timestamp_utc": "2026-06-23T17:35:00Z",
+  "authority": "DASHBOARD_UI_REFINEMENT",
+  "success_state": "UNITY_MODEL_DASHBOARD_P1_VISUAL_REFINEMENT_COMPLETE",
+  "changes_summary": "Fleet health bar, mode strip, segmented switch, card grid with Local/Cloud grouping, Home Mode simplified labels, Business Mode governance details, visual risk heat grid, horizontal route pipeline, asset badge grid, health dot animations, card fade-in",
+  "files_modified": ["D:\\RETROFUSE_OPS\\Dashboard\\server.py", "D:\\RETROFUSE_OPS\\Dashboard\\templates\\index.html"],
+  "api_endpoints_verified": ["/api/models/dashboard?mode=home", "/api/models/dashboard?mode=business", "/api/models/routing-eligibility", "/api/models/assets", "/api/models/edit-receipts"],
+  "constraints_preserved": ["read-only settings", "eligibility counts", "sensitive data display", "settings provenance", "edit receipts", "route flow", "risk heat", "no SAFEPOINT changes", "no pricing hardcoding"]
+}

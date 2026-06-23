@@ -1,0 +1,1091 @@
+﻿from fastapi import FastAPI
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pathlib import Path
+import json
+import datetime as dt
+
+app = FastAPI(title="RetroFuse OPS Dashboard v1.4")
+
+
+@app.get("/_health")
+def _health():
+    return { "status": "ok" }
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# -------------------------------------------------------------------
+# Embedded HTML template (v1.4 with Browser Telemetry panel)
+# -------------------------------------------------------------------
+
+INDEX_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>RetroFuse OPS Dashboard v1.4</title>
+  <style>
+    :root {
+      --bg: #020617;
+      --bg-card: #020617;
+      --bg-card-alt: #020617;
+      --border-subtle: #1f2937;
+      --accent: #38bdf8;
+      --accent-soft: rgba(56, 189, 248, 0.12);
+      --text-main: #e5e7eb;
+      --text-muted: #9ca3af;
+      --text-danger: #f97373;
+      --text-warn: #fbbf24;
+      --text-ok: #4ade80;
+      --shadow-soft: 0 18px 60px rgba(15, 23, 42, 0.7);
+      --radius-xl: 18px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
+        "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top, #020617 0, #020617 40%, #000 100%);
+      color: var(--text-main);
+    }
+
+    .app-shell {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      padding: 24px;
+      gap: 20px;
+    }
+
+    .header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .title-block {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .title {
+      font-size: 1.4rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .title-pill {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: linear-gradient(
+        135deg,
+        rgba(15, 23, 42, 0.9),
+        rgba(15, 23, 42, 0.4)
+      );
+      color: var(--text-muted);
+    }
+
+    .subtitle {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }
+
+    .meta-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .meta-pill {
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: rgba(15, 23, 42, 0.9);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .meta-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: var(--accent);
+      box-shadow: 0 0 0 4px var(--accent-soft);
+    }
+
+    .meta-label {
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      font-size: 0.65rem;
+      color: #6b7280;
+    }
+
+    .meta-value {
+      color: var(--text-main);
+    }
+
+    .content-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      align-items: stretch;
+    }
+
+    @media (max-width: 1200px) {
+      .content-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 800px) {
+      .app-shell {
+        padding: 12px;
+      }
+      .content-grid {
+        grid-template-columns: minmax(0, 1fr);
+      }
+    }
+
+    .card {
+      background: radial-gradient(circle at top left, #020617 0, #020617 40%, #000 100%);
+      border-radius: var(--radius-xl);
+      border: 1px solid var(--border-subtle);
+      padding: 14px 14px 12px 14px;
+      box-shadow: var(--shadow-soft);
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(circle at top, rgba(56, 189, 248, 0.12) 0, transparent 60%),
+        linear-gradient(135deg, rgba(248, 250, 252, 0.12), transparent 50%);
+      mix-blend-mode: soft-light;
+      opacity: 0.6;
+    }
+
+    .card-inner {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      height: 100%;
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 6px;
+    }
+
+    .card-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-main);
+    }
+
+    .card-tag {
+      font-size: 0.62rem;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      color: var(--text-muted);
+    }
+
+    .card-body {
+      font-size: 0.78rem;
+      color: var(--text-main);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .card-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .value {
+      font-size: 0.8rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .value-ok {
+      color: var(--text-ok);
+    }
+
+    .value-warn {
+      color: var(--text-warn);
+    }
+
+    .value-bad {
+      color: var(--text-danger);
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: rgba(15, 23, 42, 0.9);
+      font-size: 0.7rem;
+      color: var(--text-main);
+    }
+
+    .pill-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+    }
+
+    .pill-dot.ok {
+      background: var(--text-ok);
+    }
+
+    .pill-dot.warn {
+      background: var(--text-warn);
+    }
+
+    .pill-dot.bad {
+      background: var(--text-danger);
+    }
+
+    .mono {
+      font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
+        Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 0.72rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .small {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
+    .list {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      max-height: 140px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .list-item {
+      font-size: 0.74rem;
+      color: var(--text-main);
+      border-radius: 10px;
+      padding: 4px 6px;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(31, 41, 55, 0.9);
+    }
+
+    .list-item strong {
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    .footer-note {
+      margin-top: 4px;
+      font-size: 0.68rem;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .btn-refresh {
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.4);
+      background: radial-gradient(circle at top left, #0f172a 0, #020617 100%);
+      color: var(--text-main);
+      padding: 4px 10px;
+      font-size: 0.74rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      transition: background 0.15s ease, transform 0.08s ease, box-shadow 0.15s ease;
+      box-shadow: 0 0 0 1px rgba(15, 23, 42, 1), 0 10px 30px rgba(15, 23, 42, 0.8);
+    }
+
+    .btn-refresh:hover {
+      background: radial-gradient(circle at top right, #0b1120 0, #020617 100%);
+      transform: translateY(-1px);
+      box-shadow: 0 12px 40px rgba(15, 23, 42, 0.95);
+    }
+
+    .btn-refresh:active {
+      transform: translateY(0);
+      box-shadow: 0 4px 18px rgba(15, 23, 42, 0.9);
+    }
+
+    .btn-refresh span.icon {
+      font-size: 0.8rem;
+      opacity: 0.9;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      font-size: 0.66rem;
+      color: var(--text-muted);
+    }
+
+    .badge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: var(--accent);
+    }
+
+    details {
+      border-radius: 10px;
+      border: 1px solid rgba(31, 41, 55, 0.95);
+      background: radial-gradient(circle at top left, #020617 0, #020617 40%, #020617 100%);
+      padding: 5px 6px;
+    }
+
+    summary {
+      cursor: pointer;
+      list-style: none;
+      font-size: 0.76rem;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+
+    summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .summary-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .summary-chevron {
+      font-size: 0.6rem;
+      color: var(--text-muted);
+    }
+
+    details[open] .summary-chevron {
+      transform: rotate(90deg);
+    }
+
+    .details-body {
+      margin-top: 4px;
+      border-top: 1px solid rgba(31, 41, 55, 0.8);
+      padding-top: 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .content-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      align-items: stretch;
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="header">
+      <div class="title-block">
+        <div class="title">
+          RetroFuse OPS Dashboard
+          <span class="title-pill">OPS SPINE · v1.4 · TELEMETRY</span>
+        </div>
+        <div class="subtitle">
+          RFCC health, Bolt browser telemetry, SAFEPOINT engine, and Alpha capture —
+          rendered locally from DailyCheck snapshots.
+        </div>
+      </div>
+      <div class="meta-bar">
+        <div class="meta-pill">
+          <span class="meta-dot"></span>
+          <span class="meta-label">Mode</span>
+          <span class="meta-value">Operations · Number One</span>
+        </div>
+        <button class="btn-refresh" onclick="loadSnapshot(true)">
+          <span class="icon">⟳</span>
+          <span>Refresh snapshot</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="content-grid">
+      <section class="card">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Snapshot & Overview</div>
+            <div class="card-tag">RFCC · STATUS</div>
+          </div>
+          <div class="card-body" id="snapshot-card">
+            <div class="small">Waiting for latest DailyCheck JSON…</div>
+          </div>
+          <div class="footer-note">
+            <span id="snapshot-meta">No snapshot loaded.</span>
+            <span class="small">Source: RetroFuse DailyCheck v1.4</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Browser Process Telemetry</div>
+            <div class="card-tag">Bolt RC1 · RC3 · GPU</div>
+          </div>
+          <div class="card-body" id="telemetry-card">
+            <div class="small">
+              RC1/RC3 status, renderer count, and GPU pipeline snapshot rendered from DailyCheck.
+            </div>
+
+            <details open>
+              <summary>
+                <span class="summary-label">
+                  <span class="badge">
+                    <span class="badge-dot"></span>
+                    RC1 (Bolt RC1)
+                  </span>
+                  <span class="small" id="rc1-status-pill">status: unknown</span>
+                </span>
+                <span class="summary-chevron">▶</span>
+              </summary>
+              <div class="details-body" id="rc1-details"></div>
+            </details>
+
+            <details>
+              <summary>
+                <span class="summary-label">
+                  <span class="badge">
+                    <span class="badge-dot"></span>
+                    RC3 (Bolt RC3)
+                  </span>
+                  <span class="small" id="rc3-status-pill">status: unknown</span>
+                </span>
+                <span class="summary-chevron">▶</span>
+              </summary>
+              <div class="details-body" id="rc3-details"></div>
+            </details>
+
+            <details>
+              <summary>
+                <span class="summary-label">
+                  <span class="badge">
+                    <span class="badge-dot"></span>
+                    Renderers
+                  </span>
+                  <span class="small" id="renderer-summary">0 renderer processes</span>
+                </span>
+                <span class="summary-chevron">▶</span>
+              </summary>
+              <div class="details-body" id="renderer-details"></div>
+            </details>
+
+            <details>
+              <summary>
+                <span class="summary-label">
+                  <span class="badge">
+                    <span class="badge-dot"></span>
+                    GPU Pipeline
+                  </span>
+                  <span class="small" id="gpu-summary">No GPU data</span>
+                </span>
+                <span class="summary-chevron">▶</span>
+              </summary>
+              <div class="details-body" id="gpu-details"></div>
+            </details>
+          </div>
+          <div class="footer-note">
+            <span class="small">
+              Telemetry is read-only. No control path exposed here.
+            </span>
+            <span class="small">
+              Data source: RetroFuse DailyCheck snapshots
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Disks & Storage</div>
+            <div class="card-tag">C · D · Z</div>
+          </div>
+          <div class="card-body" id="disks-card">
+            <div class="small">Waiting for disk data…</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Used/free in bytes from the last DailyCheck.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">SAFEPOINT Engine</div>
+            <div class="card-tag">ARCHIVE · ENGINE</div>
+          </div>
+          <div class="card-body" id="safepoints-card">
+            <div class="small">No SAFEPOINT data loaded yet.</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Counts & latest SAFEPOINTs from RFCC archive.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Alpha Wakeflow Capture</div>
+            <div class="card-tag">ALPHA · RAW</div>
+          </div>
+          <div class="card-body" id="alpha-card">
+            <div class="small">
+              Tracking the Alpha\\Raw folder for recent notes and overnight captures.
+            </div>
+            <div class="small" id="alpha-details">Waiting for Alpha folder data…</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Future: direct links to latest alpha notes.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Ops Notes & Meta</div>
+            <div class="card-tag">DAILYCHECK · NOTES</div>
+          </div>
+          <div class="card-body" id="notes-card">
+            <div class="small">No notes recorded in this snapshot.</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Notes are optional annotations from the DailyCheck run.</span>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    function shorten(str, max) {
+      if (!str || typeof str !== "string") return "";
+      if (str.length <= max) return str;
+      return str.slice(0, max - 3) + "...";
+    }
+
+    function fmtBytes(n) {
+      if (typeof n !== "number" || isNaN(n)) return "n/a";
+      const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+      let u = 0;
+      let v = n;
+      while (v >= 1024 && u < units.length - 1) {
+        v /= 1024;
+        u++;
+      }
+      return v.toFixed(1) + " " + units[u];
+    }
+
+    function safeGet(obj, path, fallback = null) {
+      try {
+        return path.split(".").reduce((o, key) => (o && key in o ? o[key] : undefined), obj) ?? fallback;
+      } catch {
+        return fallback;
+      }
+    }
+
+    function setStatusPill(el, status) {
+      if (!el) return;
+      const s = (status || "unknown").toString().toLowerCase();
+      el.textContent = "status: " + s;
+    }
+
+    async function loadSnapshot(showSpinner) {
+      const snapshotCard = document.getElementById("snapshot-card");
+      const snapshotMeta = document.getElementById("snapshot-meta");
+
+      if (showSpinner && snapshotCard) {
+        snapshotCard.innerHTML = '<div class="small">Refreshing snapshot…</div>';
+        if (snapshotMeta) snapshotMeta.textContent = "Refreshing…";
+      }
+
+      let snapshot;
+      try {
+        const response = await fetch("/api/latest?nocache=" + Date.now());
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        snapshot = await response.json();
+      } catch (err) {
+        if (snapshotCard) {
+          snapshotCard.innerHTML =
+            '<div class="small" style="color: #f97373;">Failed to load snapshot: ' +
+            (err && err.message ? err.message : "Unknown error") +
+            "</div>";
+        }
+        if (snapshotMeta) snapshotMeta.textContent = "Snapshot load failed.";
+        return;
+      }
+
+      renderSnapshot(snapshot);
+      renderTelemetry(snapshot);
+      renderDisks(snapshot);
+      renderSafepoints(snapshot);
+      renderAlpha(snapshot);
+      renderNotes(snapshot);
+    }
+
+    function renderSnapshot(snapshot) {
+      const snapshotCard = document.getElementById("snapshot-card");
+      const snapshotMeta = document.getElementById("snapshot-meta");
+      if (!snapshotCard) return;
+
+      const ts = snapshot.timestamp || "unknown";
+      const opsRoot = snapshot.ops_root || "(not set)";
+      const rc1Status = safeGet(snapshot, "rc1.status", "unknown");
+      const rc3Status = safeGet(snapshot, "rc3.status", "unknown");
+
+      const rc1Color =
+        rc1Status === "running" ? "value-ok" :
+        rc1Status === "not_running" ? "value-warn" :
+        "value-bad";
+
+      const rc3Color =
+        rc3Status === "running" ? "value-ok" :
+        rc3Status === "not_running" ? "value-warn" :
+        "value-bad";
+
+      snapshotCard.innerHTML = `
+        <div class="card-row">
+          <div>
+            <div class="label">Snapshot timestamp</div>
+            <div class="value">${ts}</div>
+          </div>
+        </div>
+        <div class="card-row">
+          <div>
+            <div class="label">OPS root</div>
+            <div class="value mono">${opsRoot}</div>
+          </div>
+        </div>
+        <div class="card-row">
+          <div>
+            <div class="label">RC1 (Bolt RC1)</div>
+            <div class="value ${rc1Color}">${rc1Status}</div>
+          </div>
+          <div>
+            <div class="label">RC3 (Bolt RC3)</div>
+            <div class="value ${rc3Color}">${rc3Status}</div>
+          </div>
+        </div>
+      `;
+
+      if (snapshotMeta) snapshotMeta.textContent = "Last snapshot loaded.";
+    }
+
+    function renderTelemetry(snapshot) {
+      const rc1Details = document.getElementById("rc1-details");
+      const rc3Details = document.getElementById("rc3-details");
+      const rc1Pill = document.getElementById("rc1-status-pill");
+      const rc3Pill = document.getElementById("rc3-status-pill");
+      const rendererSummary = document.getElementById("renderer-summary");
+      const rendererDetails = document.getElementById("renderer-details");
+      const gpuSummary = document.getElementById("gpu-summary");
+      const gpuDetails = document.getElementById("gpu-details");
+
+      const rc1 = snapshot.rc1 || {};
+      const rc3 = snapshot.rc3 || {};
+      const renderers = snapshot.renderers || {};
+      const gpu = snapshot.gpu_pipeline || {};
+
+      const rc1Status = rc1.status || "unknown";
+      const rc1Pids = Array.isArray(rc1.process_id) ? rc1.process_id :
+                      rc1.process_id ? [rc1.process_id] : [];
+      const rc1Cmds = Array.isArray(rc1.command_line) ? rc1.command_line :
+                      rc1.command_line ? [rc1.command_line] : [];
+
+      if (rc1Pill) setStatusPill(rc1Pill, rc1Status);
+
+      if (rc1Details) {
+        if (!rc1Status && rc1Pids.length === 0) {
+          rc1Details.innerHTML = '<div class="small">No RC1 data in this snapshot.</div>';
+        } else {
+          const pidList = rc1Pids
+            .map(pid => `<span class="list-item mono">PID: ${pid}</span>`)
+            .join("");
+
+          const cmdList = rc1Cmds
+            .map((cmd, idx) => `<div class="list-item mono"><strong>Command ${idx + 1}:</strong> ${shorten(cmd, 260)}</div>`)
+            .join("");
+
+          rc1Details.innerHTML = `
+            <div class="card-row">
+              <div>
+                <div class="label">Status</div>
+                <div class="value">${rc1Status}</div>
+              </div>
+              <div>
+                <div class="label">Process count</div>
+                <div class="value">${rc1Pids.length}</div>
+              </div>
+            </div>
+            <div class="label">PIDs</div>
+            <div class="list">
+              ${pidList || '<div class="small">No PIDs recorded.</div>'}
+            </div>
+            <div class="label" style="margin-top:4px;">Command line(s)</div>
+            <div class="list">
+              ${cmdList || '<div class="small">No command-line data recorded.</div>'}
+            </div>
+          `;
+        }
+      }
+
+      const rc3Status = rc3.status || "unknown";
+      const rc3Pids = Array.isArray(rc3.process_id) ? rc3.process_id :
+                      rc3.process_id ? [rc3.process_id] : [];
+      const rc3Cmds = Array.isArray(rc3.command_line) ? rc3.command_line :
+                      rc3.command_line ? [rc3.command_line] : [];
+
+      if (rc3Pill) setStatusPill(rc3Pill, rc3Status);
+
+      if (rc3Details) {
+        if (!rc3Status && rc3Pids.length === 0) {
+          rc3Details.innerHTML = '<div class="small">No RC3 data in this snapshot.</div>';
+        } else {
+          const pidList = rc3Pids
+            .map(pid => `<span class="list-item mono">PID: ${pid}</span>`)
+            .join("");
+
+          const cmdList = rc3Cmds
+            .map((cmd, idx) => `<div class="list-item mono"><strong>Command ${idx + 1}:</strong> ${shorten(cmd, 260)}</div>`)
+            .join("");
+
+          rc3Details.innerHTML = `
+            <div class="card-row">
+              <div>
+                <div class="label">Status</div>
+                <div class="value">${rc3Status}</div>
+              </div>
+              <div>
+                <div class="label">Process count</div>
+                <div class="value">${rc3Pids.length}</div>
+              </div>
+            </div>
+            <div class="label">PIDs</div>
+            <div class="list">
+              ${pidList || '<div class="small">No PIDs recorded.</div>'}
+            </div>
+            <div class="label" style="margin-top:4px;">Command line(s)</div>
+            <div class="list">
+              ${cmdList || '<div class="small">No command-line data recorded.</div>'}
+            </div>
+          `;
+        }
+      }
+
+      if (rendererSummary || rendererDetails) {
+        const count = typeof renderers.renderer_count === "number" ? renderers.renderer_count : 0;
+        const pids = Array.isArray(renderers.renderer_pids) ? renderers.renderer_pids :
+                     renderers.renderer_pids ? [renderers.renderer_pids] : [];
+
+        if (rendererSummary) {
+          rendererSummary.textContent = `${count} renderer process${count === 1 ? "" : "es"}`;
+        }
+
+        if (rendererDetails) {
+          if (count === 0 && pids.length === 0) {
+            rendererDetails.innerHTML = '<div class="small">No renderer data in this snapshot.</div>';
+          } else {
+            const pidList = pids
+              .map(pid => `<span class="list-item mono">PID: ${pid}</span>`)
+              .join("");
+            rendererDetails.innerHTML = `
+              <div class="card-row">
+                <div>
+                  <div class="label">Renderer count</div>
+                  <div class="value">${count}</div>
+                </div>
+              </div>
+              <div class="label">Renderer PIDs</div>
+              <div class="list">
+                ${pidList || '<div class="small">No renderer PIDs recorded.</div>'}
+              </div>
+            `;
+          }
+        }
+      }
+
+      if (gpuSummary || gpuDetails) {
+        const gpuCount = typeof gpu.gpu_process_count === "number" ? gpu.gpu_process_count : null;
+        const gpuCmd = gpu.sample_gpu_cmd || null;
+
+        if (gpuSummary) {
+          if (gpuCount === null && !gpuCmd) {
+            gpuSummary.textContent = "No GPU data in this snapshot.";
+          } else {
+            gpuSummary.textContent = `${gpuCount ?? "?"} GPU process${gpuCount === 1 ? "" : "es"} tracked`;
+          }
+        }
+
+        if (gpuDetails) {
+          if (gpuCount === null && !gpuCmd) {
+            gpuDetails.innerHTML = '<div class="small">No GPU pipeline data recorded.</div>';
+          } else {
+            gpuDetails.innerHTML = `
+              <div class="card-row">
+                <div>
+                  <div class="label">GPU process count</div>
+                  <div class="value">${gpuCount ?? "unknown"}</div>
+                </div>
+              </div>
+              <div class="label">Sample GPU command</div>
+              <div class="list">
+                <div class="list-item mono">${gpuCmd ? shorten(gpuCmd, 1200) : "n/a"}</div>
+              </div>
+            `;
+          }
+        }
+      }
+    }
+
+    function renderDisks(snapshot) {
+      const disksCard = document.getElementById("disks-card");
+      if (!disksCard) return;
+
+      const disks = Array.isArray(snapshot.disks) ? snapshot.disks : [];
+      if (disks.length === 0) {
+        disksCard.innerHTML = '<div class="small">No disk data found in this snapshot.</div>';
+        return;
+      }
+
+      const rows = disks.map(d => {
+        const name = d.name || "?";
+        const used = fmtBytes(d.used_bytes);
+        const free = fmtBytes(d.free_bytes);
+        const total = fmtBytes(d.total_bytes);
+        return `
+          <div class="list-item">
+            <div class="card-row">
+              <div class="value mono">Drive ${name}</div>
+              <div class="small">${used} used / ${free} free</div>
+            </div>
+            <div class="small">Total: ${total}</div>
+          </div>
+        `;
+      }).join("");
+
+      disksCard.innerHTML = `<div class="list">${rows}</div>`;
+    }
+
+    function renderSafepoints(snapshot) {
+      const safepointsCard = document.getElementById("safepoints-card");
+      if (!safepointsCard) return;
+
+      const safepoints = Array.isArray(snapshot.safepoints) ? snapshot.safepoints : [];
+      if (safepoints.length === 0) {
+        safepointsCard.innerHTML =
+          '<div class="small">No SAFEPOINT summary available in this snapshot.</div>';
+        return;
+      }
+
+      const rows = safepoints.map((sp, idx) => {
+        const root = sp.root_path || "(unknown root)";
+        const exists = sp.exists ? "yes" : "no";
+        const count = typeof sp.zip_count === "number" ? sp.zip_count : "?";
+        const latest = sp.latest_zip || {};
+        const latestName = latest.name || "(none)";
+        const latestTime = typeof latest.last_write === "string"
+          ? latest.last_write
+          : latest.last_write || "n/a";
+        const latestSize = fmtBytes(latest.size_bytes ?? 0);
+
+        return `
+          <div class="list-item">
+            <div class="card-row">
+              <div class="small">Root ${idx + 1}</div>
+              <div class="small">Exists: ${exists}</div>
+            </div>
+            <div class="label">Root path</div>
+            <div class="mono">${root}</div>
+            <div class="card-row" style="margin-top:4px;">
+              <div class="label">ZIP count</div>
+              <div class="value">${count}</div>
+            </div>
+            <div class="label" style="margin-top:4px;">Latest SAFEPOINT</div>
+            <div class="mono">${latestName}</div>
+            <div class="small">Last write: ${latestTime}</div>
+            <div class="small">Size: ${latestSize}</div>
+          </div>
+        `;
+      }).join("");
+
+      safepointsCard.innerHTML = `<div class="list">${rows}</div>`;
+    }
+
+    function renderAlpha(snapshot) {
+      const alphaDetails = document.getElementById("alpha-details");
+      if (!alphaDetails) return;
+
+      const alpha = snapshot.alpha || {};
+      const path = alpha.path || "(not set)";
+      const exists = alpha.exists ? "yes" : "no";
+      const files24 = typeof alpha.files_24h === "number" ? alpha.files_24h : 0;
+      const latest = alpha.latest_file || null;
+
+      alphaDetails.innerHTML = `
+        <div class="card-row">
+          <div>
+            <div class="label">Alpha path</div>
+            <div class="mono">${path}</div>
+          </div>
+        </div>
+        <div class="card-row">
+          <div>
+            <div class="label">Folder exists</div>
+            <div class="value">${exists}</div>
+          </div>
+          <div>
+            <div class="label">Files last 24h</div>
+            <div class="value">${files24}</div>
+          </div>
+        </div>
+        <div style="margin-top:4px;">
+          <div class="label">Latest file</div>
+          ${
+            latest
+              ? `<div class="mono">${latest}</div>`
+              : `<div class="small">No recorded Alpha files in this window.</div>`
+          }
+        </div>
+      `;
+    }
+
+    function renderNotes(snapshot) {
+      const notesCard = document.getElementById("notes-card");
+      if (!notesCard) return;
+      const notes = Array.isArray(snapshot.notes) ? snapshot.notes : [];
+      if (notes.length === 0) {
+        notesCard.innerHTML = '<div class="small">No notes captured for this snapshot.</div>';
+        return;
+      }
+
+      const items = notes.map(n => `<div class="list-item small">• ${n}</div>`).join("");
+      notesCard.innerHTML = `<div class="list">${items}</div>`;
+    }
+
+    loadSnapshot(false);
+  </script>
+</body>
+</html>
+"""
+
+# -------------------------------------------------------------------
+# Routes
+# -------------------------------------------------------------------
+
+STATUS_DIR = Path(r"D:\RETROFUSE_OPS\Status\RFCC")
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index() -> HTMLResponse:
+    return HTMLResponse(INDEX_HTML)
+
+
+@app.get("/api/latest", response_class=JSONResponse)
+async def api_latest() -> JSONResponse:
+    """
+    Return the newest DailyCheck_*.json snapshot, decoded with utf-8-sig
+    to handle BOM safely.
+    """
+    if not STATUS_DIR.exists():
+        return JSONResponse(
+            {"error": f"Status directory not found: {STATUS_DIR}"},
+            status_code=404,
+        )
+
+    files = sorted(STATUS_DIR.glob("DailyCheck_*.json"), key=lambda p: p.stat().st_mtime)
+    if not files:
+        return JSONResponse(
+            {"error": "No DailyCheck_*.json snapshots found."},
+            status_code=404,
+        )
+
+    latest = files[-1]
+
+    try:
+        text = latest.read_text(encoding="utf-8-sig")
+        data = json.loads(text)
+    except Exception as exc:
+        return JSONResponse(
+            {
+                "error": f"Failed to parse {latest.name} as JSON",
+                "detail": str(exc),
+            },
+            status_code=500,
+        )
+
+    data.setdefault("dashboard_loaded_at", dt.datetime.now().isoformat())
+    return JSONResponse(data)
+

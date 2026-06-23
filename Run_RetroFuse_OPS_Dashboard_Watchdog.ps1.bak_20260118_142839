@@ -1,0 +1,68 @@
+﻿param(
+  [string]$DashRoot = "D:\RETROFUSE_OPS\Dashboard",
+  [int]$Port = 8101,
+  [string]$TargetHost = "127.0.0.1"
+)
+
+$ErrorActionPreference = "Stop"
+
+$startScript = Join-Path $DashRoot "Start_RetroFuse_OpsDashboard_Headless.ps1"
+$workDir     = Join-Path $DashRoot "_Work"
+if (!(Test-Path $workDir)) { New-Item -ItemType Directory -Path $workDir | Out-Null }
+$logPath     = Join-Path $workDir "OpsDashboard_Watchdog.log"
+
+function Write-Log {
+  param([string]$Message,[string]$Level="INFO")
+  $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+  Add-Content -Path $logPath -Value ("[{0}] [{1}] {2}" -f $timestamp, $Level, $Message)
+}
+
+function Test-PortOpen {
+  param([string]$TargetHost,[int]$Port)
+  try {
+    $client = New-Object System.Net.Sockets.TcpClient
+    $async  = $client.BeginConnect($TargetHost, $Port, $null, $null)
+    $ok     = $async.AsyncWaitHandle.WaitOne(500)
+    if (-not $ok) { $client.Close(); return $false }
+    $null = $client.EndConnect($async)
+    $client.Close()
+    return $true
+  } catch { return $false }
+}
+
+Write-Log "Watchdog started. DashRoot=$DashRoot Port=$Port TargetHost=$TargetHost"
+
+while ($true) {
+  try {
+    if (-not (Test-Path -Path $startScript -PathType Leaf)) {
+      Write-Log "Start script missing: $startScript" "ERROR"
+    } else {
+      $up = Test-PortOpen -TargetHost $TargetHost -Port $Port
+      if (-not $up) {
+        Write-Log "Dashboard DOWN on port $Port. Launching headless start..."
+        Start-Process -FilePath "powershell.exe" -ArgumentList @(
+          "-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",$startScript
+        ) -WindowStyle Hidden | Out-Null
+
+        Start-Sleep -Seconds 2
+
+        # wait up to ~20s for the port to come up
+        $tries = 20
+        while ($tries -gt 0 -and -not (Test-PortOpen -TargetHost $TargetHost -Port $Port)) {
+          Start-Sleep -Seconds 1
+          $tries--
+        }
+
+        if (Test-PortOpen -TargetHost $TargetHost -Port $Port) {
+          Write-Log "Dashboard UP on port $Port"
+        } else {
+          Write-Log "Still DOWN after launch; check uvicorn logs in _Work" "ERROR"
+        }
+      }
+    }
+  } catch {
+    Write-Log ("Watchdog loop error: " + $_.Exception.Message) "ERROR"
+  }
+
+  Start-Sleep -Seconds 30
+}

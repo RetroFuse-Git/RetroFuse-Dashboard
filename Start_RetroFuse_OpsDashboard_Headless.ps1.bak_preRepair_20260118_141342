@@ -1,0 +1,19 @@
+﻿param(
+  [int]$Port = 8101,
+  [string]$DashRoot = "D:\RETROFUSE_OPS\Dashboard"
+)
+
+$ErrorActionPreference = 'Stop'
+$venvPy = Join-Path $DashRoot '.venv\Scripts\python.exe'
+if(!(Test-Path -LiteralPath $venvPy)){ throw ('Dashboard venv python not found: ' + $venvPy) }
+
+Set-Location $DashRoot
+
+# Log to _Work
+$work = Join-Path $DashRoot '_Work'
+if(!(Test-Path $work)){ New-Item -ItemType Directory -Path $work -Force | Out-Null }
+$stdout = Join-Path $work ('uvicorn_stdout_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '.log')
+$stderr = Join-Path $work ('uvicorn_stderr_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '.log')
+
+# Run uvicorn (no --reload; watchdog handles restarts)
+& $venvPy -u -m uvicorn server:app --host 127.0.0.1 --port $Port 1>>$stdout 2>>$stderr
