@@ -1,0 +1,68 @@
+{
+  "receipt_type": "wrapper_registry_phase1_implementation",
+  "phase": "PHASE1_WRAPPER_VISIBILITY",
+  "registry_version": "v0.1",
+  "timestamp_utc": "2026-06-23T19:30:00Z",
+  "operator": "claude_code_bounded_write_lane",
+  "write_target": "D:\\PORTTORETRO_ARCHIVE\\PROJECTS",
+  "write_boundary_enforced": true,
+  "files_written": [
+    {
+      "path": "D:\\PORTTORETRO_ARCHIVE\\PROJECTS\\Dashboard\\Tools\\maintenance\\UNITY_MODEL_DASHBOARD_WRAPPER_REGISTRY_PHASE1_v0.1.json",
+      "type": "registry_data_layer",
+      "size_bytes": 0,
+      "verified": true
+    },
+    {
+      "path": "D:\\PORTTORETRO_ARCHIVE\\PROJECTS\\Dashboard\\Tools\\maintenance\\UNITY_MODEL_DASHBOARD_WRAPPER_REGISTRY_PHASE1_v0.1.md",
+      "type": "documentation",
+      "size_bytes": 0,
+      "verified": true
+    },
+    {
+      "path": "D:\\PORTTORETRO_ARCHIVE\\PROJECTS\\Dashboard\\Tools\\maintenance\\receipt_unity_model_dashboard_wrapper_registry_phase1_v0.1.json",
+      "type": "receipt",
+      "size_bytes": 0,
+      "verified": true
+    }
+  ],
+  "files_pending_manual_patch": [
+    "D:\\RETROFUSE_OPS\\Dashboard\\app\\model_dashboard.py",
+    "D:\\RETROFUSE_OPS\\Dashboard\\server.py",
+    "D:\\RETROFUSE_OPS\\Dashboard\\templates\\index.html"
+  ],
+  "reason_blocked": "WRITE_TARGET_EXACT is D:\\PORTTORETRO_ARCHIVE\\PROJECTS; target paths under D:\\RETROFUSE_OPS\\ are outside write boundary",
+  "registry_summary": {
+    "total_wrappers": 13,
+    "active_wrappers": 4,
+    "catalog_only_wrappers": 9,
+    "configured": 3,
+    "detected": 3,
+    "enabled": 4,
+    "unknown_evidence": 2,
+    "main_board_visible": 4,
+    "catalog_visible": 13
+  },
+  "forbidden_items_confirmed_not_violated": [
+    "no_one_click_launch",
+    "no_settings_mutation",
+    "no_wrapper_selection_persistence",
+    "no_catalog_only_wrappers_on_main_cards",
+    "no_model_wrapper_settings_changed",
+    "no_safepoint_continuity_changes",
+    "no_hardcoded_pricing_quota",
+    "no_unrelated_template_debt"
+  ],
+  "architecture_rules_applied": [
+    "Known ecosystem wrapper is not the same as active dashboard lane.",
+    "Main Models board shows configured, detected, or operator-pinned wrappers only.",
+    "Gear drawer/catalog may show optional ecosystem wrappers.",
+    "Operator preference must be separate from product support.",
+    "Unknown evidence must remain UNKNOWN, not inferred.",
+    "Wrapper/model compatibility must be evidence-backed or marked unknown.",
+    "No arbitrary shell execution.",
+    "No launch endpoint in this phase."
+  ],
+  "success_state": "UNITY_MODEL_DASHBOARD_WRAPPER_REGISTRY_PHASE1_IMPLEMENTED",
+  "notes": "Registry data layer and documentation complete. Three files in D:\\RETROFUSE_OPS\\Dashboard\\ require manual patching to activate the API endpoint, model card wrapper chips, and Wrapper Registry UI section. Detailed patches provided in the companion markdown file."
+}
