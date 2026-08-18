@@ -520,6 +520,22 @@
           </div>
         </div>
       </section>
+
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Governor (RC3)</div>
+            <div class="card-tag">ENFORCE - VISIBILITY SLICE 1</div>
+          </div>
+          <div class="card-body" id="governor-card">
+            <div class="small">Loading Governor state...</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Read-only: canonical daemon receipt + latest state. No controls, no mutation.</span>
+            <span class="small">Auto-refreshes every 10s.</span>
+          </div>
+        </div>
+      </section>
     </main>
 
     <main class="content-grid module-panel" data-module-panel="dailybundle">
@@ -1581,14 +1597,86 @@
     }
   }
 
+  // ---- Governor (RC3) visibility slice 1 ----
+  function freshnessClass(f) {
+    const v = (f || "").toString().toUpperCase();
+    if (v === "FRESH") return "value-ok";
+    if (v === "STALE") return "value-warn";
+    if (v === "MISSING" || v === "INVALID/ERROR") return "value-bad";
+    return "value-warn";
+  }
+
+  function healthClass(h) {
+    const v = (h || "").toString().toUpperCase();
+    if (v === "HEALTHY" || v === "RUNNING") return "value-ok";
+    if (v === "WARN" || v === "DEGRADED") return "value-warn";
+    if (v === "ERROR" || v === "FAILED" || v === "STOPPED") return "value-bad";
+    return "value-warn";
+  }
+
+  function renderGovernor(data) {
+    const card = document.getElementById("governor-card");
+    if (!card) return;
+    const hb = data.heartbeat_freshness || "MISSING";
+    const st = data.state_freshness || "MISSING";
+    const hbAge = data.heartbeat_age_sec != null ? String(data.heartbeat_age_sec) + "s" : "n/a";
+    const stAge = data.state_age_sec != null ? String(data.state_age_sec) + "s" : "n/a";
+    // Explicit freshness banner: stale/missing/invalid must be visible, never
+    // silently presented as current.
+    const overall = (hb === "FRESH" && st === "FRESH") ? "FRESH" : (hb === "STALE" || st === "STALE" ? "STALE" : hb);
+    const bannerCls = overall === "FRESH" ? "value-ok" : (overall === "STALE" ? "value-warn" : "value-bad");
+    card.innerHTML = `
+      <div style="margin-bottom:8px; padding:6px 8px; border:1px solid rgba(148,163,184,0.25); border-radius:6px;">
+        <div class="label">Source Freshness</div>
+        <div class="value ${bannerCls}">${escapeHtml(overall)}</div>
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:8px;">
+        <div><div class="label">Mode</div><div class="value ${data.mode === "ENFORCE" ? "value-ok" : "value-warn"}">${escapeHtml(data.mode)}</div></div>
+        <div><div class="label">Health</div><div class="value ${healthClass(data.health)}">${escapeHtml(data.health)}</div></div>
+        <div><div class="label">Process</div><div class="value ${healthClass(data.process_status)}">${escapeHtml(data.process_status)}</div></div>
+        <div><div class="label">Lease</div><div class="value ${healthClass(data.lease_state)}">${escapeHtml(data.lease_state)}</div></div>
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:8px;">
+        <div><div class="label">PID</div><div class="value mono">${escapeHtml(data.pid != null ? String(data.pid) : "n/a")}</div></div>
+        <div><div class="label">Heartbeat Age</div><div class="value mono ${freshnessClass(hb)}">${escapeHtml(hbAge)} (${escapeHtml(hb)})</div></div>
+        <div><div class="label">State Age</div><div class="value mono ${freshnessClass(st)}">${escapeHtml(stAge)} (${escapeHtml(st)})</div></div>
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:8px;">
+        <div><div class="label">State</div><div class="value mono">${escapeHtml(data.state)}</div></div>
+        <div><div class="label">Trigger</div><div class="value mono">${escapeHtml(data.trigger)}</div></div>
+        <div><div class="label">Transition</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(data.transition_id || "n/a")}</div></div>
+      </div>
+      <div class="card-row" style="border-top:1px solid rgba(31,41,55,0.8); padding-top:8px;">
+        <div><div class="label">Latest Chain</div><div class="value mono" style="font-size:.68rem;">${escapeHtml(data.chain_root_id || "n/a")}</div></div>
+      </div>
+      <div class="card-row">
+        <div><div class="label">Reason</div><div class="value" style="font-size:.68rem;">${escapeHtml(data.reason || "n/a")}</div></div>
+      </div>
+    `;
+  }
+
+  async function loadGovernor() {
+    try {
+      const r = await fetch("/api/governor?nocache=" + Date.now());
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      renderGovernor(data);
+    } catch (err) {
+      const card = document.getElementById("governor-card");
+      if (card) card.innerHTML = '<div class="small" style="color:#f97373;">Failed to load Governor data: ' + escapeHtml(err.message || "unknown") + "</div>";
+    }
+  }
+
   loadOrchestrator();
   loadDailyBundle();
   loadBolt();
   loadSmcWrcLiveStatus();
+  loadGovernor();
   setInterval(loadOrchestrator, 10000);
   setInterval(loadDailyBundle, 10000);
   setInterval(loadBolt, 10000);
   setInterval(loadSmcWrcLiveStatus, 10000);
+  setInterval(loadGovernor, 10000);
 
   // ---- Unity Model Dashboard ----
 

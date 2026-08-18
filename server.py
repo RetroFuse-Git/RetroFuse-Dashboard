@@ -1674,8 +1674,140 @@ def _read_template_fallback() -> str:
 def index() -> HTMLResponse:
     return HTMLResponse(_read_template_fallback())
 
+# ---------------------------------------------------------------------------
+# Governor visibility (OPS-20260818-DASHBOARD-GOVERNOR-VISIBILITY-SLICE1-001)
+# Read-only display of canonical Governor runtime state. The dashboard NEVER
+# mutates Governor files, grants execution authority, or exposes controls.
+# Freshness is classified independently from the canonical health field so
+# stale HEALTHY data cannot masquerade as current.
+# ---------------------------------------------------------------------------
+GOVERNOR_STATE_DIR = Path(r"D:\RETROFUSE_OPS\Tools\RCD\Tools\rc3_governor\state")
+GOVERNOR_RECEIPT_PATH = GOVERNOR_STATE_DIR / "governor_daemon_receipt.json"
+GOVERNOR_LATEST_PATH = GOVERNOR_STATE_DIR / "governor_state_latest.json"
+# Governor daemon heartbeat cadence (observed receipt refresh ~5 min); a
+# heartbeat older than 15 minutes is classified STALE. This threshold applies
+# to the daemon HEARTBEAT (liveness). The latest-state file is NOT a heartbeat:
+# it records the last transition and its source freshness is derived from the
+# live heartbeat + presence/validity, never from transition age.
+GOVERNOR_HEARTBEAT_STALE_SECONDS = 15 * 60
 
 
+def _read_json_file(path: Path) -> tuple:
+    """Read a JSON file; return (dict|None, error_str|None). Boundedly
+    degrades on missing / malformed sources -- never raises."""
+    try:
+        if not path.exists():
+            return None, "MISSING"
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        if not isinstance(data, dict):
+            return None, "INVALID"
+        return data, None
+    except Exception as exc:
+        return None, "INVALID"
+
+
+def _parse_utc_iso(value):
+    """Parse ISO-8601 UTC timestamps (with or without +00:00 / Z suffix).
+    Returns epoch seconds float, or None when unparseable."""
+    if not value:
+        return None
+    text = str(value).strip()
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return None
+
+
+def _build_governor_snapshot() -> Dict[str, Any]:
+    receipt, receipt_err = _read_json_file(GOVERNOR_RECEIPT_PATH)
+    latest, latest_err = _read_json_file(GOVERNOR_LATEST_PATH)
+
+    now_utc = datetime.now(timezone.utc)
+
+    def classify(fresh_ts, stale_after):
+        """FRESH / STALE / MISSING / INVALID/ERROR classification."""
+        if fresh_ts is None:
+            return "MISSING"
+        age_sec = max(0.0, now_utc.timestamp() - fresh_ts)
+        if age_sec > stale_after:
+            return "STALE"
+        return "FRESH"
+
+    # Receipt fields (canonical daemon identity/health).
+    receipt_heartbeat = _parse_utc_iso(receipt.get("heartbeat_utc") if receipt else None)
+    receipt_freshness = ("MISSING" if receipt_err == "MISSING" else "INVALID/ERROR") if receipt_err else classify(receipt_heartbeat, GOVERNOR_HEARTBEAT_STALE_SECONDS)
+    receipt_age_sec = None
+    if receipt_heartbeat is not None:
+        receipt_age_sec = round(max(0.0, now_utc.timestamp() - receipt_heartbeat), 1)
+
+    # Latest-state fields (most recent transition).
+    latest_ts = _parse_utc_iso(latest.get("timestamp_utc") if latest else None)
+    # The latest-state file records the LAST TRANSITION, not a heartbeat cadence.
+    # A healthy Governor legitimately holds a state indefinitely (e.g. TERMINAL after
+    # a seal), so the state source is classified by presence/validity AND the live
+    # daemon heartbeat -- never by transition age. Transition age stays informational.
+    if latest_err:
+        latest_freshness = "MISSING" if latest_err == "MISSING" else "INVALID/ERROR"
+    elif receipt_freshness == "FRESH":
+        latest_freshness = "FRESH"
+    elif receipt_freshness in ("STALE", "MISSING", "INVALID/ERROR"):
+        latest_freshness = receipt_freshness
+    else:
+        latest_freshness = "FRESH"
+    latest_age_sec = None
+    if latest_ts is not None:
+        latest_age_sec = round(max(0.0, now_utc.timestamp() - latest_ts), 1)
+
+    return {
+        "app": "governor",
+        "label": "Governor (RC3)",
+        "mode": (receipt.get("runtime_mode") if receipt else None) or "unknown",
+        "health": (receipt.get("health_classification") if receipt else None) or ("error" if receipt_err else "unknown"),
+        "process_status": (receipt.get("process_status") if receipt else None) or "unknown",
+        "lease_state": (receipt.get("lease_state") if receipt else None) or "unknown",
+        "pid": receipt.get("pid") if receipt else None,
+        "daemon_identity": (receipt.get("daemon_identity") if receipt else None) or "unknown",
+        "heartbeat_utc": receipt.get("heartbeat_utc") if receipt else None,
+        "heartbeat_age_sec": receipt_age_sec,
+        "heartbeat_freshness": receipt_freshness,
+        "state": (latest.get("new_state") if latest else None) or "unknown",
+        "trigger": (latest.get("trigger") if latest else None) or "unknown",
+        "transition_id": (latest.get("transition_id") if latest else None),
+        "reason": (latest.get("reason") if latest else None),
+        "chain_root_id": (latest.get("chain_root_id") if latest else None),
+        "ticket_id": (latest.get("ticket_id") if latest else None),
+        "round_id": (latest.get("round_id") if latest else None),
+        "stage_id": (latest.get("stage_id") if latest else None),
+        "governor_version": (latest.get("governor_version") if latest else None),
+        "state_timestamp_utc": latest.get("timestamp_utc") if latest else None,
+        "state_age_sec": latest_age_sec,
+        "state_freshness": latest_freshness,
+        # Distinct source classification: canonical health vs source freshness
+        # are separate fields so stale HEALTHY data cannot look current.
+        "health_is_current": receipt_freshness == "FRESH",
+        "sources": {
+            "receipt": {
+                "path": str(GOVERNOR_RECEIPT_PATH),
+                "status": "ok" if receipt_err is None else receipt_err,
+                "freshness": receipt_freshness,
+            },
+            "latest_state": {
+                "path": str(GOVERNOR_LATEST_PATH),
+                "status": "ok" if latest_err is None else latest_err,
+                "freshness": latest_freshness,
+            },
+        },
+    }
+
+
+@app.get("/api/governor")
+def api_governor() -> JSONResponse:
+    return JSONResponse(_build_governor_snapshot())
 
 @app.get("/health")
 def health() -> JSONResponse:
