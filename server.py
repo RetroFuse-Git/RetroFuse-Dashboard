@@ -1809,6 +1809,135 @@ def _build_governor_snapshot() -> Dict[str, Any]:
 def api_governor() -> JSONResponse:
     return JSONResponse(_build_governor_snapshot())
 
+# ---------------------------------------------------------------------------
+# Governor activity feed (OPS-20260818-DASHBOARD-GOVERNOR-EVENT-FEED-SLICE2-001)
+# Read-only bounded tail of the canonical Governor event/transition ledgers and
+# recovery-request directory. Strictly observational: never mutates Governor
+# sources, never exposes controls. Malformed-row policy matches the Governor's
+# own drainer contract (governor_integration.py): stop at the offending line
+# and surface a bounded INVALID condition -- never skip-and-continue.
+# ---------------------------------------------------------------------------
+GOVERNOR_EVENT_LEDGER = GOVERNOR_STATE_DIR / "event_ledger.jsonl"
+GOVERNOR_TRANSITION_LEDGER = GOVERNOR_STATE_DIR / "transition_ledger.jsonl"
+GOVERNOR_RECOVERY_DIR = GOVERNOR_STATE_DIR / "recovery_requests"
+# Bounded tail: last N records per ledger. Events are sparse (91 rows) and
+# transitions frequent (357 rows); 20 rows each gives a useful recent window
+# without loading historical history.
+GOVERNOR_ACTIVITY_TAIL = 20
+# Activity feed is append-oriented and low-churn; 30s cadence balances
+# visibility with overhead (Slice-1 status card keeps its 10s cadence).
+GOVERNOR_ACTIVITY_STALE_SECONDS = 30 * 60
+
+
+def _read_jsonl_tail(path: Path, limit: int) -> dict:
+    """Read the bounded tail of a JSONL ledger following the Governor drain
+    contract: an unparseable row stops the read at that line and surfaces a
+    bounded INVALID condition (never skip-and-continue). Returns:
+    {rows, truncated, error, error_line, line_count, path}."""
+    if not path.exists():
+        return {"rows": [], "truncated": False, "error": "MISSING",
+                "error_line": None, "line_count": 0, "path": str(path)}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw_lines = [line for line in f if line.strip()]
+    except Exception as exc:
+        return {"rows": [], "truncated": False, "error": "READ_FAILED",
+                "error_line": None, "line_count": 0, "path": str(path),
+                "detail": str(exc)}
+    total = len(raw_lines)
+    start = max(0, total - limit)
+    rows = []
+    error = None
+    error_line = None
+    for i in range(start, total):
+        try:
+            rows.append(json.loads(raw_lines[i]))
+        except Exception as exc:
+            # Governor drainer contract: stop at the offending line, surface
+            # the condition, never silently skip.
+            error = "INVALID"
+            error_line = i + 1
+            rows = rows[:0] if False else rows  # keep prior parsed rows
+            break
+    return {
+        "rows": rows,
+        "truncated": total > limit,
+        "error": error,
+        "error_line": error_line,
+        "line_count": total,
+        "path": str(path),
+    }
+
+
+def _read_recovery_tail(limit: int) -> dict:
+    """Read the bounded recent recovery-request files (sorted by mtime desc,
+    newest first). Canonical status field is surfaced verbatim -- never
+    inferred from absence or timing."""
+    if not GOVERNOR_RECOVERY_DIR.is_dir():
+        return {"rows": [], "truncated": False, "error": "MISSING",
+                "error_line": None, "path": str(GOVERNOR_RECOVERY_DIR)}
+    files = sorted(GOVERNOR_RECOVERY_DIR.glob("*.json"),
+                   key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
+    rows = []
+    error = None
+    for p in files:
+        try:
+            rows.append(json.loads(p.read_text(encoding="utf-8-sig")))
+        except Exception:
+            error = "INVALID"
+    return {"rows": rows, "truncated": len(list(GOVERNOR_RECOVERY_DIR.glob("*.json"))) > limit,
+            "error": error, "error_line": None, "path": str(GOVERNOR_RECOVERY_DIR)}
+
+
+def _build_governor_activity_snapshot() -> Dict[str, Any]:
+    now_utc = datetime.now(timezone.utc)
+
+    def with_age(rows):
+        out = []
+        for r in rows:
+            ts = _parse_utc_iso(r.get("timestamp_utc") or r.get("observed_at") or r.get("created_at"))
+            out.append({"record": r, "age_sec": round(max(0.0, now_utc.timestamp() - ts), 1) if ts else None})
+        return out
+
+    events = _read_jsonl_tail(GOVERNOR_EVENT_LEDGER, GOVERNOR_ACTIVITY_TAIL)
+    transitions = _read_jsonl_tail(GOVERNOR_TRANSITION_LEDGER, GOVERNOR_ACTIVITY_TAIL)
+    recovery = _read_recovery_tail(GOVERNOR_ACTIVITY_TAIL)
+
+    return {
+        "app": "governor_activity",
+        "label": "Governor Activity",
+        "fetched_at_utc": now_utc.isoformat(),
+        "tail_limit": GOVERNOR_ACTIVITY_TAIL,
+        "events": {
+            "records": with_age(events["rows"]),
+            "source": events["path"],
+            "line_count": events["line_count"],
+            "truncated": events["truncated"],
+            "error": events["error"],
+            "error_line": events["error_line"],
+        },
+        "transitions": {
+            "records": with_age(transitions["rows"]),
+            "source": transitions["path"],
+            "line_count": transitions["line_count"],
+            "truncated": transitions["truncated"],
+            "error": transitions["error"],
+            "error_line": transitions["error_line"],
+        },
+        "recovery": {
+            "records": with_age(recovery["rows"]),
+            "source": recovery["path"],
+            "truncated": recovery["truncated"],
+            "error": recovery["error"],
+        },
+    }
+
+
+@app.get("/api/governor/events")
+def api_governor_events() -> JSONResponse:
+    return JSONResponse(_build_governor_activity_snapshot())
+
+
 @app.get("/health")
 def health() -> JSONResponse:
     return JSONResponse({"status": "ok", "service": "ops-dashboard", "version": APP_VERSION})

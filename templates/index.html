@@ -536,6 +536,22 @@
           </div>
         </div>
       </section>
+
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Governor Activity</div>
+            <div class="card-tag">EVENTS - TRANSITIONS - RECOVERY</div>
+          </div>
+          <div class="card-body" id="governor-activity-card">
+            <div class="small">Loading Governor activity...</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Bounded read-only tail of event/transition ledgers + recovery requests. No controls, no mutation.</span>
+            <span class="small">Auto-refreshes every 30s.</span>
+          </div>
+        </div>
+      </section>
     </main>
 
     <main class="content-grid module-panel" data-module-panel="dailybundle">
@@ -1666,17 +1682,109 @@
       if (card) card.innerHTML = '<div class="small" style="color:#f97373;">Failed to load Governor data: ' + escapeHtml(err.message || "unknown") + "</div>";
     }
   }
+  // ---- Governor Activity feed (slice 2) ----
+  function activityLabelClass(kind, record) {
+    const k = (kind || "").toUpperCase();
+    if (k === "RECOVERY") {
+      const st = ((record && record.status) || "").toUpperCase();
+      if (st === "COMPLETED") return "value-ok";
+      if (st === "FAILED") return "value-bad";
+      if (st === "PENDING" || st === "REQUESTED") return "value-warn";
+      return "value-warn";
+    }
+    if (k === "EVENT") {
+      const et = ((record && record.event_type) || "").toUpperCase();
+      if (et === "CHAIN_TERMINAL" || et === "AUTHORITY_VERDICT") return "value-ok";
+      if (et === "CHAIN_ADMITTED" || et === "SURFACE_RESOLVED") return "value-ok";
+      if (et === "RESPONSE_VISIBLE" || et === "RESPONSE_COMPLETE") return "value-warn";
+      if (et.indexOf("AMBIGUOUS") >= 0 || et.indexOf("INCOMPLETE") >= 0) return "value-bad";
+      return "value-warn";
+    }
+    if (k === "TRANSITION") {
+      const ns = ((record && record.new_state) || "").toUpperCase();
+      if (ns === "TERMINAL") return "value-ok";
+      if (ns === "ERROR" || ns === "FAILED") return "value-bad";
+      return "value-warn";
+    }
+    return "value-warn";
+  }
+
+  function activityRecordHtml(kind, r) {
+    const rec = r.record || {};
+    const age = r.age_sec != null ? String(r.age_sec) + "s" : "n/a";
+    const ts = rec.timestamp_utc || rec.observed_at || rec.created_at || "n/a";
+    const chain = rec.chain_root_id || "n/a";
+    const ticket = rec.ticket_id || "";
+    const labelCls = activityLabelClass(kind, rec);
+    let detail = "";
+    if (kind === "EVENT") {
+      detail = escapeHtml(rec.event_type || "") + (rec.round_id ? " / " + escapeHtml(rec.round_id) : "");
+    } else if (kind === "TRANSITION") {
+      detail = escapeHtml(rec.previous_state || "?") + " -> " + escapeHtml(rec.new_state || "?") + (rec.trigger ? " / " + escapeHtml(rec.trigger) : "");
+    } else if (kind === "RECOVERY") {
+      detail = escapeHtml(rec.requested_action || "") + " / " + escapeHtml(rec.failure_class || "") + " / " + escapeHtml(rec.status || "");
+    }
+    return '<div class="card-row" style="border-top:1px solid rgba(31,41,55,0.6); padding-top:6px; margin-top:6px;">' +
+      '<div class="label" style="min-width:90px;">' + escapeHtml(kind) + "</div>" +
+      '<div style="flex:1; min-width:0;"><div class="value mono" style="font-size:.7rem;">' + detail + "</div>" +
+      '<div class="small" style="color:var(--text-muted); font-size:.62rem;">' + escapeHtml(ts) + " / age " + escapeHtml(age) + "</div>" +
+      '<div class="small" style="color:var(--text-muted); font-size:.6rem;">' + escapeHtml(chain) + (ticket ? " / " + escapeHtml(ticket) : "") + "</div></div>" +
+    "</div>";
+  }
+
+  function renderGovernorActivity(data) {
+    const card = document.getElementById("governor-activity-card");
+    if (!card) return;
+    let html = "";
+    const limit = data.tail_limit || 20;
+    const noteParts = [];
+    if (data.events && data.events.error) noteParts.push("events: " + data.events.error + (data.events.error_line ? "@line" + data.events.error_line : ""));
+    if (data.transitions && data.transitions.error) noteParts.push("transitions: " + data.transitions.error + (data.transitions.error_line ? "@line" + data.transitions.error_line : ""));
+    if (data.recovery && data.recovery.error) noteParts.push("recovery: " + data.recovery.error);
+    const note = noteParts.length ? '<div class="small" style="color:#f97373;">' + escapeHtml(noteParts.join(" | ")) + "</div>" : "";
+    const merged = [];
+    (data.events ? data.events.records || [] : []).forEach(function(r) { merged.push({ kind: "EVENT", r: r }); });
+    (data.transitions ? data.transitions.records || [] : []).forEach(function(r) { merged.push({ kind: "TRANSITION", r: r }); });
+    (data.recovery ? data.recovery.records || [] : []).forEach(function(r) { merged.push({ kind: "RECOVERY", r: r }); });
+    merged.sort(function(a, b) {
+      const ta = (a.r.record && (a.r.record.timestamp_utc || a.r.record.observed_at || a.r.record.created_at)) || "";
+      const tb = (b.r.record && (b.r.record.timestamp_utc || b.r.record.observed_at || b.r.record.created_at)) || "";
+      return tb.localeCompare(ta);
+    });
+    const shown = merged.slice(0, 25);
+    if (shown.length === 0) {
+      html += '<div class="small">No Governor activity yet.</div>';
+    } else {
+      html += shown.map(function(m) { return activityRecordHtml(m.kind, m.r); }).join("");
+    }
+    html += '<div class="small" style="color:var(--text-muted); margin-top:8px;">Bounded tail: ' + limit + " per source / showing " + shown.length + " newest merged / auto-refresh 30s</div>";
+    card.innerHTML = note + html;
+  }
+
+  async function loadGovernorActivity() {
+    try {
+      const r = await fetch("/api/governor/events?nocache=" + Date.now());
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      renderGovernorActivity(data);
+    } catch (err) {
+      const card = document.getElementById("governor-activity-card");
+      if (card) card.innerHTML = '<div class="small" style="color:#f97373;">Failed to load Governor activity: ' + escapeHtml(err.message || "unknown") + "</div>";
+    }
+  }
 
   loadOrchestrator();
   loadDailyBundle();
   loadBolt();
   loadSmcWrcLiveStatus();
   loadGovernor();
+  loadGovernorActivity();
   setInterval(loadOrchestrator, 10000);
   setInterval(loadDailyBundle, 10000);
   setInterval(loadBolt, 10000);
   setInterval(loadSmcWrcLiveStatus, 10000);
   setInterval(loadGovernor, 10000);
+  setInterval(loadGovernorActivity, 30000);
 
   // ---- Unity Model Dashboard ----
 
