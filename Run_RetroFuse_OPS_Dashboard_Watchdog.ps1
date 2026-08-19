@@ -16,6 +16,21 @@ if (-not (Test-Path $workDir)) { New-Item -ItemType Directory -Path $workDir -Fo
 function Write-Log {
   param([string]$Message, [string]$Level='INFO')
   $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+  # Bounded rotation per OPS_LogRotationPolicy_v1 (ordinary_runtime_debug_logs:
+  # rotate_at_mb 5). Add-Content opens/closes per call, so renaming between
+  # appends is safe for this live writer. Rotated evidence is retained;
+  # deletion occurs only under a separate authorized cleanup.
+  if (Test-Path -LiteralPath $logPath) {
+    try {
+      $logSize = (Get-Item -LiteralPath $logPath).Length
+      if ($logSize -gt 5MB) {
+        $rotName = 'OpsDashboard_Watchdog.log.rotated_' + (Get-Date -Format 'yyyyMMdd_HHmmss')
+        Rename-Item -LiteralPath $logPath -NewName $rotName -Force
+      }
+    } catch {
+      Write-Warning ('Watchdog log rotation failed: ' + $_.Exception.Message)
+    }
+  }
   Add-Content -Path $logPath -Value ('[' + $ts + '] [' + $Level + '] ' + $Message)
 }
 

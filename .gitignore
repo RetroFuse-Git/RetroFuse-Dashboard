@@ -26,6 +26,7 @@ _Work/
 logs/
 _last_error.txt
 OpsDashboard_Watchdog.log
+OpsDashboard_Watchdog.log.rotated_*
 
 # API debug dumps
 api_*.json
