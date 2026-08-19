@@ -396,6 +396,20 @@
     </nav>
 
     <main class="content-grid module-panel active" data-module-panel="overview">
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">RetroFuse Health Summary</div>
+            <div class="card-tag">OVERVIEW - ONE-GLANCE</div>
+          </div>
+          <div class="card-body" id="overview-card">
+            <div class="small">Loading health summary...</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Composed from existing sources: Governor, Secretary, SAFEPOINT candidates.</span>
+          </div>
+        </div>
+      </section>
       <section class="card">
         <div class="card-inner">
           <div class="card-header">
@@ -806,6 +820,45 @@
     if (v === "running" || v === "ready") return "value-ok";
     if (v === "not_running" || v === "stale" || v === "booting") return "value-warn";
     return "value-bad";
+  }
+
+  // Phase 5 overview: one-glance health summary composed from existing sources.
+  function renderOverview(ov) {
+    const card = document.getElementById("overview-card");
+    if (!card) return;
+    const gov = ov.governor || {};
+    const sec = ov.secretary || {};
+    const git = ov.git_sync || {};
+    const alerts = ov.alert_count != null ? ov.alert_count : "n/a";
+    const active = ov.whats_active || {};
+    const alertCls = alerts === 0 ? "value-ok" : (alerts > 2 ? "value-bad" : "value-warn");
+    card.innerHTML = `
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:8px; margin-bottom:8px;">
+        <div><div class="label">Governor Health</div><div class="value ${healthClass(gov.health)}">${escapeHtml(gov.health || "unknown")}</div></div>
+        <div><div class="label">Governor Mode</div><div class="value">${escapeHtml(gov.mode || "n/a")}</div></div>
+        <div><div class="label">Governor Freshness</div><div class="value ${freshnessClass(gov.freshness)}">${escapeHtml(gov.freshness || "MISSING")}</div></div>
+        <div><div class="label">Secretary</div><div class="value ${sec.status && sec.status.toLowerCase() === "ready" ? "value-ok" : "value-warn"}">${escapeHtml(sec.status || "unknown")}</div></div>
+        <div><div class="label">Secretary Backlog</div><div class="value ${sec.backlog_count > 0 ? "value-warn" : "value-ok"}">${escapeHtml(String(sec.backlog_count != null ? sec.backlog_count : "n/a"))}</div></div>
+        <div><div class="label">Alerts</div><div class="value ${alertCls}">${escapeHtml(String(alerts))}</div></div>
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; border-top:1px solid rgba(31,41,55,0.8); padding-top:8px;">
+        <div><div class="label">Git Sync</div><div class="value ${git.status === "OK" ? "value-ok" : "value-warn"}">${escapeHtml(git.status || "NOT_AVAILABLE")}</div></div>
+        <div><div class="label">Active: RC2</div><div class="value">${escapeHtml(active.rc2 || "n/a")}</div></div>
+        <div><div class="label">Active: RC3</div><div class="value">${escapeHtml(active.rc3 || "n/a")}</div></div>
+      </div>
+      ${ov.alert_details && ov.alert_details.length ? `<div class="small" style="margin-top:6px; color:#f97373;">${escapeHtml(ov.alert_details.join("; "))}</div>` : ""}
+    `;
+  }
+
+  async function loadOverview() {
+    try {
+      const r = await fetch("/api/overview?nocache=" + Date.now());
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      renderOverview(await r.json());
+    } catch (err) {
+      const el = document.getElementById("overview-card");
+      if (el) el.innerHTML = '<div class="small" style="color:#f97373;">Failed to load overview: ' + escapeHtml(err.message || "unknown") + "</div>";
+    }
   }
 
   function renderSnapshot(snapshot) {
@@ -1688,6 +1741,7 @@
     }
   }
 
+  loadOverview();
   loadStatus();
   setInterval(loadStatus, 10000);
 

@@ -1927,6 +1927,69 @@ def api_bolt() -> JSONResponse:
     return JSONResponse(snap)
 
 
+@app.get("/api/overview")
+def api_overview() -> JSONResponse:
+    """Phase 5 summary surface: answers 'Is RetroFuse healthy? What is active?
+    What needs attention?' composed ONLY from existing read-only sources.
+    No invented health scores, severity algorithms, or freshness thresholds.
+    git_sync has no backend source contract in this Dashboard, so it is
+    reported as NOT_AVAILABLE rather than fabricated."""
+    governor = _build_governor_snapshot()
+    bolt = _build_bolt_snapshot()
+    latest = _build_latest_snapshot()
+
+    # Alert count: real, existing signals only.
+    alert_count = 0
+    alert_details = []
+    gov_health = governor.get("health", "unknown")
+    if gov_health in ("DEGRADED", "ERROR", "OFFLINE"):
+        alert_count += 1
+        alert_details.append("governor_health=" + str(gov_health))
+    if governor.get("state_freshness") in ("STALE", "MISSING", "INVALID/ERROR"):
+        alert_count += 1
+        alert_details.append("governor_freshness=" + str(governor.get("state_freshness")))
+    sec_status = bolt.get("secretary_status") or "unknown"
+    if sec_status.lower() not in ("", "ready", "healthy", "ok"):
+        alert_count += 1
+        alert_details.append("secretary=" + str(sec_status))
+    if isinstance(bolt.get("secretary_backlog_count"), int) and bolt["secretary_backlog_count"] > 0:
+        alert_count += 1
+        alert_details.append("secretary_backlog=" + str(bolt.get("secretary_backlog_count")))
+    safepoints = latest.get("safepoint_candidates") if isinstance(latest.get("safepoint_candidates"), list) else []
+    stale_sp = [s for s in safepoints if isinstance(s, dict) and s.get("status") in ("STALE", "INVALID")]
+    if stale_sp:
+        alert_count += len(stale_sp)
+        alert_details.append("stale_safepoint_candidates=" + str(len(stale_sp)))
+
+    return JSONResponse({
+        "overview_version": "v1",
+        "governor": {
+            "health": gov_health,
+            "mode": governor.get("mode"),
+            "state": governor.get("state"),
+            "freshness": governor.get("state_freshness"),
+        },
+        "secretary": {
+            "status": sec_status,
+            "backlog_count": bolt.get("secretary_backlog_count"),
+            "quarantine_count": bolt.get("secretary_quarantine_count"),
+        },
+        "git_sync": {
+            "status": "NOT_AVAILABLE",
+            "reason": "No git-sync source contract exists in the Dashboard backend; not fabricated.",
+        },
+        "alert_count": alert_count,
+        "alert_details": alert_details,
+        "whats_active": {
+            "governor_mode": governor.get("mode"),
+            "secretary_ready": sec_status.lower() in ("", "ready", "healthy", "ok"),
+            "rc3": (latest.get("rc3") or {}).get("status"),
+            "rc2": (latest.get("rc2") or {}).get("status"),
+        },
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    })
+
+
 @app.get("/api/status")
 def api_status() -> JSONResponse:
     """Phase 4 aggregate: compose the daily-operations 10s pollers into one
