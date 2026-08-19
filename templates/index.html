@@ -2140,6 +2140,14 @@
     }
   }
 
+  // currentMode is switched via switchMode(); initialize to the default
+  // "home" so the first loadModelDashboard() call (and every poll before any
+  // mode click) has a defined value. Without this, the implicit global is only
+  // created when a mode button is clicked, so the initial load throws
+  // ReferenceError: currentMode is not defined -> Fleet Health and the mode
+  // strip render "Failed to load".
+  let currentMode = "home";
+
   loadModelDashboard();
   loadModelEdits();
   setInterval(loadModelDashboard, 30000);
