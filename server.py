@@ -1927,6 +1927,39 @@ def api_bolt() -> JSONResponse:
     return JSONResponse(snap)
 
 
+@app.get("/api/status")
+def api_status() -> JSONResponse:
+    """Phase 4 aggregate: compose the daily-operations 10s pollers into one
+    read-only response. Sub-payloads are keyed by source endpoint name and
+    preserve every field their individual renderers consume. Pure composition
+    of existing builder functions - no new operational authority."""
+    return JSONResponse({
+        "orchestrator": _build_orchestrator_snapshot(),
+        "dailybundle": _build_dailybundle_app_snapshot(),
+        "bolt": _build_bolt_snapshot(),
+        "governor": _build_governor_snapshot(),
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    })
+
+
+@app.get("/api/models/all")
+def api_models_all(mode: str = "home") -> JSONResponse:
+    """Phase 4 aggregate: compose the six 30s model pollers into one read-only
+    response. Sub-payloads are keyed by source endpoint name and preserve the
+    fields consumed by the existing renderers. Pure composition of existing
+    builder functions - no new operational authority. mode passes through to
+    build_mode_aware_dashboard so home/business switching semantics are kept."""
+    return JSONResponse({
+        "dashboard": build_mode_aware_dashboard(mode),
+        "edit_receipts": list_edit_receipts(),
+        "assets": build_asset_inventory(),
+        "routing_eligibility": build_routing_eligibility(),
+        "wrappers": build_wrapper_registry(),
+        "settings_intelligence": build_settings_intelligence(),
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    })
+
+
 @app.get("/api/smc/wrc-live-status")
 def api_smc_wrc_live_status():
     return JSONResponse(_build_smc_wrc_live_status())

@@ -1672,15 +1672,28 @@
     }
   }
 
-  loadOrchestrator();
-  loadDailyBundle();
-  loadBolt();
-  loadGovernor();
+  // Phase 4 aggregate: one /api/status fetch replaces 4 individual 10s pollers.
+  async function loadStatus() {
+    try {
+      const r = await fetch("/api/status?nocache=" + Date.now());
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      if (data.orchestrator) renderOrchestrator(data.orchestrator);
+      if (data.dailybundle) renderDailyBundle(data.dailybundle);
+      if (data.bolt) renderBolt(data.bolt);
+      if (data.governor) renderGovernor(data.governor);
+    } catch (err) {
+      // Preserve per-card error behavior: do not blank existing content.
+      console.warn("[status aggregate] " + (err.message || "unknown"));
+    }
+  }
+
+  loadStatus();
+  setInterval(loadStatus, 10000);
+
+  // Governor Activity is a distinct 30s poller (audit keeps it independent of
+  // the 10s /api/status group).
   loadGovernorActivity();
-  setInterval(loadOrchestrator, 10000);
-  setInterval(loadDailyBundle, 10000);
-  setInterval(loadBolt, 10000);
-  setInterval(loadGovernor, 10000);
   setInterval(loadGovernorActivity, 30000);
 
   // ---- Unity Model Dashboard ----
@@ -2002,11 +2015,9 @@
     loadModelDashboard();
   }
 
-  async function loadModelDashboard() {
+  async function loadModelDashboard(preloaded) {
     try {
-      const r = await fetch("/api/models/dashboard?mode=" + currentMode + "&nocache=" + Date.now());
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      const data = await r.json();
+      const data = preloaded || await (await fetch("/api/models/dashboard?mode=" + currentMode + "&nocache=" + Date.now())).json();
       renderModelSummary(data);
       renderModelLanes(data);
       renderModelSettings(data);
@@ -2025,11 +2036,9 @@
     }
   }
 
-  async function loadModelEdits() {
+  async function loadModelEdits(preloaded) {
     try {
-      const r = await fetch("/api/models/edit-receipts?nocache=" + Date.now());
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      const data = await r.json();
+      const data = preloaded || await (await fetch("/api/models/edit-receipts?nocache=" + Date.now())).json();
       renderModelEdits(data);
     } catch (err) {
       const el = document.getElementById("models-edits-card");
@@ -2045,10 +2054,26 @@
   // strip render "Failed to load".
   let currentMode = "home";
 
-  loadModelDashboard();
-  loadModelEdits();
-  setInterval(loadModelDashboard, 30000);
-  setInterval(loadModelEdits, 30000);
+  // Phase 4 aggregate: one /api/models/all fetch dispatches to all six model
+  // renderers. mode passes through so home/business semantics are preserved.
+  async function loadModelsAll() {
+    try {
+      const r = await fetch("/api/models/all?mode=" + currentMode + "&nocache=" + Date.now());
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const d = await r.json();
+      if (d.dashboard) await loadModelDashboard(d.dashboard);
+      if (d.edit_receipts) await loadModelEdits(d.edit_receipts);
+      if (d.assets) await loadModelAssets(d.assets);
+      if (d.routing_eligibility) await loadModelRouting(d.routing_eligibility);
+      if (d.wrappers) await loadWrapperRegistry(d.wrappers);
+      if (d.settings_intelligence) await loadSettingsIntelligence(d.settings_intelligence);
+    } catch (err) {
+      console.warn("[models/all aggregate] " + (err.message || "unknown"));
+    }
+  }
+
+  loadModelsAll();
+  setInterval(loadModelsAll, 30000);
 
   // ---- Asset Inventory & Provider Policy ----
 
@@ -2190,11 +2215,9 @@
     `;
   }
 
-  async function loadModelAssets() {
+  async function loadModelAssets(preloaded) {
     try {
-      const r = await fetch("/api/models/assets?nocache=" + Date.now());
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      const data = await r.json();
+      const data = preloaded || await (await fetch("/api/models/assets?nocache=" + Date.now())).json();
       renderAssetInventory(data);
       renderPolicySurfaces(data);
     } catch (err) {
@@ -2205,11 +2228,9 @@
     }
   }
 
-  async function loadModelRouting() {
+  async function loadModelRouting(preloaded) {
     try {
-      const r = await fetch("/api/models/routing-eligibility?nocache=" + Date.now());
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      const data = await r.json();
+      const data = preloaded || await (await fetch("/api/models/routing-eligibility?nocache=" + Date.now())).json();
       renderRoutingEligibility(data);
     } catch (err) {
       const el = document.getElementById("models-routing-card");
@@ -2217,7 +2238,6 @@
     }
   }
 
-  loadModelAssets();
 
 
 
@@ -2335,11 +2355,9 @@
       '<div class=\'list\' style=\'max-height:none;\'>' + items + '</div>';
   }
 
-  async function loadModelAssets() {
+  async function loadModelAssets(preloaded) {
     try {
-      const r = await fetch('/api/models/assets?nocache=' + Date.now());
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const data = await r.json();
+      const data = preloaded || await (await fetch('/api/models/assets?nocache=' + Date.now())).json();
       renderAssetInventory(data);
       renderPolicySurfaces(data);
     } catch (err) {
@@ -2350,11 +2368,9 @@
     }
   }
 
-  async function loadModelRouting() {
+  async function loadModelRouting(preloaded) {
     try {
-      const r = await fetch('/api/models/routing-eligibility?nocache=' + Date.now());
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const data = await r.json();
+      const data = preloaded || await (await fetch('/api/models/routing-eligibility?nocache=' + Date.now())).json();
       renderRoutingEligibility(data);
     } catch (err) {
       const el = document.getElementById('models-routing-card');
@@ -2362,10 +2378,7 @@
     }
   }
 
-  loadModelAssets();
-  loadModelRouting();
-  setInterval(loadModelAssets, 30000);
-  setInterval(loadModelRouting, 30000);
+
 
   // ---- Wrapper Registry ----
 
@@ -2406,11 +2419,9 @@
     card.innerHTML = html;
   }
 
-  async function loadWrapperRegistry() {
+  async function loadWrapperRegistry(preloaded) {
     try {
-      const r = await fetch("/api/models/wrappers?nocache=" + Date.now());
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      const data = await r.json();
+      const data = preloaded || await (await fetch("/api/models/wrappers?nocache=" + Date.now())).json();
       renderWrapperRegistry(data);
     } catch (err) {
       const el = document.getElementById("models-wrappers-card");
@@ -2418,8 +2429,7 @@
     }
   }
 
-  loadWrapperRegistry();
-  setInterval(loadWrapperRegistry, 30000);
+
 
   // ---- Effective Settings Intelligence ----
 
@@ -2521,11 +2531,9 @@
     card.innerHTML = html;
   }
 
-  async function loadSettingsIntelligence() {
+  async function loadSettingsIntelligence(preloaded) {
     try {
-      const r = await fetch("/api/models/settings-intelligence?nocache=" + Date.now());
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      const data = await r.json();
+      const data = preloaded || await (await fetch("/api/models/settings-intelligence?nocache=" + Date.now())).json();
       renderSettingsIntelligence(data);
     } catch (err) {
       const el = document.getElementById("models-settings-intelligence-card");
@@ -2533,8 +2541,7 @@
     }
   }
 
-  loadSettingsIntelligence();
-  setInterval(loadSettingsIntelligence, 30000);
+
 
   // ---- Dashboard Settings Drawer ----
   const WRAPPER_DEFS = [
