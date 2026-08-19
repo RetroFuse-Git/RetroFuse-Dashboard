@@ -386,13 +386,16 @@
       </div>
     </header>
 
-    <nav class="module-tabs" aria-label="App modules">
-      <button class="module-tab active" data-module-tab="ops" onclick="showModule('ops')">OPS</button>
-      <button class="module-tab" data-module-tab="dailybundle" onclick="showModule('dailybundle')">Daily Bundle</button>
-      <button class="module-tab" data-module-tab="models" onclick="showModule('models')">Models</button>
+    <nav class="module-tabs" aria-label="Dashboard sections">
+      <button class="module-tab active" data-module-tab="overview" onclick="showModule('overview')">Overview</button>
+      <button class="module-tab" data-module-tab="governor" onclick="showModule('governor')">Governor/Recovery</button>
+      <button class="module-tab" data-module-tab="dailyops" onclick="showModule('dailyops')">Daily Operations</button>
+      <button class="module-tab" data-module-tab="models" onclick="showModule('models')">Models/Routing</button>
+      <button class="module-tab" data-module-tab="syshealth" onclick="showModule('syshealth')">System Health</button>
+      <button class="module-tab" data-module-tab="archive" onclick="showModule('archive')">Archive/Historical</button>
     </nav>
 
-    <main class="content-grid module-panel active" data-module-panel="ops">
+    <main class="content-grid module-panel active" data-module-panel="overview">
       <section class="card">
         <div class="card-inner">
           <div class="card-header">
@@ -408,91 +411,9 @@
           </div>
         </div>
       </section>
+    </main>
 
-      <section class="card">
-        <div class="card-inner">
-          <div class="card-header">
-            <div class="card-title">Browser Process Telemetry</div>
-            <div class="card-tag">RC1 - RC2 - RC3 - GPU</div>
-          </div>
-          <div class="card-body" id="telemetry-card">
-            <div class="small">RC1/RC2/RC3 status, renderers, and GPU pipeline from live process scan.</div>
-          </div>
-          <div class="footer-note">
-            <span class="small">Telemetry is read-only. No control path exposed.</span>
-            <span class="small">Data source: local process scan + DailyCheck.</span>
-          </div>
-        </div>
-      </section>
-
-      <section class="card">
-        <div class="card-inner">
-          <div class="card-header">
-            <div class="card-title">Disks & Storage</div>
-            <div class="card-tag">C - D - E - Z</div>
-          </div>
-          <div class="card-body" id="disks-card"><div class="small">Waiting for disk data...</div></div>
-          <div class="footer-note"><span class="small">Used/free in bytes.</span></div>
-        </div>
-      </section>
-
-            <section class="card">
-              <div class="card-inner">
-                <div class="card-header">
-                  <div class="card-title">SAFEPOINT / Candidate Review</div>
-                  <div class="card-tag">ARCHIVE - REVIEW</div>
-                </div>
-                <div class="card-body" id="safepoints-card"><div class="small">No SAFEPOINT data loaded yet.</div></div>
-                <div class="footer-note"><span class="small">Real SAFEPOINT proof stays separate from candidate review packets.</span></div>
-              </div>
-            </section>
-
-      <section class="card">
-        <div class="card-inner">
-          <div class="card-header">
-            <div class="card-title">Alpha Wakeflow Capture</div>
-            <div class="card-tag">ALPHA - RAW</div>
-          </div>
-          <div class="card-body" id="alpha-card">
-            <div class="small">Tracking Alpha\\Raw folder for recent notes and captures.</div>
-            <div class="small" id="alpha-details">Waiting for Alpha folder data...</div>
-          </div>
-          <div class="footer-note"><span class="small">Future: direct links to latest alpha notes.</span></div>
-        </div>
-      </section>
-
-
-      <section class="card" style="grid-column: 1 / -1;">
-        <div class="card-inner">
-          <div class="card-header">
-            <div class="card-title">OPS COO Orchestrator</div>
-            <div class="card-tag">PY CONTROL PLANE - STRICT GATE</div>
-          </div>
-          <div class="card-body" id="orchestrator-card">
-            <div class="small">Loading orchestrator telemetry...</div>
-          </div>
-          <div class="footer-note">
-            <span class="small">Source: OpsCOO_Daily_Orchestrator_Latest.json + lock file.</span>
-            <span class="small">Auto-refreshes every 10s.</span>
-          </div>
-        </div>
-      </section>
-      <section class="card" style="grid-column: 1 / -1;">
-        <div class="card-inner">
-          <div class="card-header">
-            <div class="card-title">Bolt RC2 Controller</div>
-            <div class="card-tag">HEARTS - LINEAGE - CMDLOG</div>
-          </div>
-          <div class="card-body" id="bolt-card">
-            <div class="small">Loading Bolt RC2 data...</div>
-          </div>
-          <div class="footer-note">
-            <span class="small">Live reads from controller_state.json, cmdlog.jsonl, and HeartBundles.</span>
-            <span class="small">Auto-refreshes every 10s.</span>
-          </div>
-        </div>
-      </section>
-
+    <main class="content-grid module-panel" data-module-panel="governor">
       <section class="card" style="grid-column: 1 / -1;">
         <div class="card-inner">
           <div class="card-header">
@@ -508,7 +429,6 @@
           </div>
         </div>
       </section>
-
       <section class="card" style="grid-column: 1 / -1;">
         <div class="card-inner">
           <div class="card-header">
@@ -526,7 +446,22 @@
       </section>
     </main>
 
-    <main class="content-grid module-panel" data-module-panel="dailybundle">
+    <main class="content-grid module-panel" data-module-panel="dailyops">
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">OPS COO Orchestrator</div>
+            <div class="card-tag">PY CONTROL PLANE - STRICT GATE</div>
+          </div>
+          <div class="card-body" id="orchestrator-card">
+            <div class="small">Loading orchestrator telemetry...</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Source: OpsCOO_Daily_Orchestrator_Latest.json + lock file.</span>
+            <span class="small">Auto-refreshes every 10s.</span>
+          </div>
+        </div>
+      </section>
       <section class="card" style="grid-column: 1 / -1;">
         <div class="card-inner">
           <div class="card-header">
@@ -690,6 +625,75 @@
           </div>
           <div class="footer-note">
             <span class="small">Settings are read-only. Source stack: factory default &rarr; Modelfile &rarr; runtime override &rarr; wrapper profile. No mutation in this phase.</span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <main class="content-grid module-panel" data-module-panel="syshealth">
+      <section class="card">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Browser Process Telemetry</div>
+            <div class="card-tag">RC1 - RC2 - RC3 - GPU</div>
+          </div>
+          <div class="card-body" id="telemetry-card">
+            <div class="small">RC1/RC2/RC3 status, renderers, and GPU pipeline from live process scan.</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Telemetry is read-only. No control path exposed.</span>
+            <span class="small">Data source: local process scan + DailyCheck.</span>
+          </div>
+        </div>
+      </section>
+      <section class="card">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Disks & Storage</div>
+            <div class="card-tag">C - D - E - Z</div>
+          </div>
+          <div class="card-body" id="disks-card"><div class="small">Waiting for disk data...</div></div>
+          <div class="footer-note"><span class="small">Used/free in bytes.</span></div>
+        </div>
+      </section>
+    </main>
+
+    <main class="content-grid module-panel" data-module-panel="archive">
+            <section class="card">
+              <div class="card-inner">
+                <div class="card-header">
+                  <div class="card-title">SAFEPOINT / Candidate Review</div>
+                  <div class="card-tag">ARCHIVE - REVIEW</div>
+                </div>
+                <div class="card-body" id="safepoints-card"><div class="small">No SAFEPOINT data loaded yet.</div></div>
+                <div class="footer-note"><span class="small">Real SAFEPOINT proof stays separate from candidate review packets.</span></div>
+              </div>
+            </section>
+      <section class="card">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Alpha Wakeflow Capture</div>
+            <div class="card-tag">ALPHA - RAW</div>
+          </div>
+          <div class="card-body" id="alpha-card">
+            <div class="small">Tracking Alpha\\Raw folder for recent notes and captures.</div>
+            <div class="small" id="alpha-details">Waiting for Alpha folder data...</div>
+          </div>
+          <div class="footer-note"><span class="small">Future: direct links to latest alpha notes.</span></div>
+        </div>
+      </section>
+      <section class="card" style="grid-column: 1 / -1;">
+        <div class="card-inner">
+          <div class="card-header">
+            <div class="card-title">Bolt RC2 Controller</div>
+            <div class="card-tag">HEARTS - LINEAGE - CMDLOG</div>
+          </div>
+          <div class="card-body" id="bolt-card">
+            <div class="small">Loading Bolt RC2 data...</div>
+          </div>
+          <div class="footer-note">
+            <span class="small">Live reads from controller_state.json, cmdlog.jsonl, and HeartBundles.</span>
+            <span class="small">Auto-refreshes every 10s.</span>
           </div>
         </div>
       </section>
