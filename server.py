@@ -1,4 +1,4 @@
-# RetroFuse OPS Dashboard server.py (v1.7_lineage_gate)
+﻿# RetroFuse OPS Dashboard server.py (v1.7_lineage_gate)
 # - Snapshot & Overview: includes OPS Signals pills (4)
 # - Browser Telemetry: collapsible RC1/RC2/RC3/Renderers/GPU (NO pills here)
 # - Disks, SAFEPOINT, Alpha, Notes: restored
@@ -81,9 +81,6 @@ SMC_WRC_OBS_DIR = SMC_DD_ROOT / "_recovery" / "scan_state" / "wrc_observation"
 SMC_WRC_CURRENT_STATUS = SMC_WRC_OBS_DIR / "WRC_CurrentStatus.json"
 
 TEMPLATE_INDEX = OPS_ROOT / "Dashboard" / "templates" / "index.html"
-PROJECT_BOARD_CACHE = OPS_ROOT / "Dashboard" / "api_debug_4b.json"
-PLANES_REGISTRY_DIR = OPS_ROOT / "Registry" / "OPS_COO" / "Registration"
-WORKER_EVENTS_DIR = OPS_ROOT / "Registry" / "OPS_COO" / "State" / "WorkerEvents"
 
 # If you have a canonical DailyCheck snapshot name, you can set it here.
 # Otherwise, the server will scan STATUS_DIR for the newest JSON file.
@@ -1550,100 +1547,8 @@ def _latest_event_files(folder: Path, limit: int = 8) -> List[Path]:
     return sorted(files, key=_safe_stat_mtime, reverse=True)[:limit]
 
 
-def _build_worker_events_summary() -> Dict[str, Any]:
-    warnings: List[str] = []
-    latest: Dict[str, List[Dict[str, Any]]] = {}
-    counts: Dict[str, int] = {}
-    for name in ("inbox", "processed", "invalid"):
-        folder = WORKER_EVENTS_DIR / name
-        if not folder.exists():
-            warnings.append(f"Missing worker events folder: {folder}")
-            counts[name] = 0
-            latest[name] = []
-            continue
-        try:
-            files = [p for p in folder.glob("*.json") if p.is_file()]
-        except Exception as exc:
-            warnings.append(f"Failed to scan {folder}: {exc}")
-            files = []
-        counts[name] = len(files)
-        latest[name] = [_event_file_summary(p) for p in sorted(files, key=_safe_stat_mtime, reverse=True)[:8]]
-    return {"ok": True, "counts": counts, "latest": latest, "warnings": warnings}
 
 
-def _build_workers_status() -> List[Dict[str, Any]]:
-    now = datetime.now(timezone.utc)
-    latest_by_worker: Dict[str, Dict[str, Any]] = {}
-    for folder_name in ("inbox", "processed", "invalid"):
-        folder = WORKER_EVENTS_DIR / folder_name
-        for path in _latest_event_files(folder, limit=100):
-            event = _event_file_summary(path)
-            worker_id = str(event.get("worker_id") or event.get("worker") or path.stem)
-            previous = latest_by_worker.get(worker_id)
-            previous_path = Path(str(previous.get("_path", ""))) if previous else None
-            if previous_path and _safe_stat_mtime(previous_path) >= _safe_stat_mtime(path):
-                continue
-            event["_path"] = str(path)
-            event["_folder"] = folder_name
-            latest_by_worker[worker_id] = event
-
-    workers: List[Dict[str, Any]] = []
-    for worker_id, event in latest_by_worker.items():
-        event_dt = _parse_utc_ts(str(event.get("event_utc") or ""))
-        age_seconds: Optional[int] = None
-        if event_dt:
-            age_seconds = max(0, int((now - event_dt.astimezone(timezone.utc)).total_seconds()))
-        status = str(event.get("status") or event.get("event_type") or "UNKNOWN")
-        alive = status not in {"COMPLETED", "FAILED", "ERROR"} and (age_seconds is None or age_seconds < 6 * 60 * 60)
-        blocker = str(event.get("blocker_code") or "NONE")
-        workers.append(
-            {
-                "worker": worker_id,
-                "pid": event.get("pid", ""),
-                "state": "BLOCKED" if blocker != "NONE" else status,
-                "alive": alive,
-                "age_seconds": age_seconds,
-                "timeout_risk": bool(age_seconds is not None and age_seconds > 60 * 60 and alive),
-                "recommended_action": "Review blocker" if blocker != "NONE" else ("No action" if alive else "Review latest terminal event"),
-                "profile": event.get("worker_type", event.get("profile", "")),
-                "role": event.get("role", "Worker"),
-                "task_id": event.get("task_id", ""),
-                "stage": event.get("stage", ""),
-                "current_operation": event.get("current_operation", event.get("summary", "")),
-                "current_path": event.get("_path", ""),
-                "blocker_code": blocker,
-                "blocker_detail": event.get("blocker_detail", ""),
-                "next_actor": event.get("next_actor", "worker"),
-                "evidence_path": event.get("evidence_path", ""),
-            }
-        )
-    workers.sort(key=lambda item: item.get("age_seconds") if item.get("age_seconds") is not None else 10**12)
-    return workers
-
-
-def _build_project_board() -> List[Dict[str, Any]]:
-    data = _read_json(PROJECT_BOARD_CACHE)
-    return data if isinstance(data, list) else []
-
-
-def _build_planes_registry() -> Dict[str, Any]:
-    warnings: List[str] = []
-    planes: List[Dict[str, Any]] = []
-    if not PLANES_REGISTRY_DIR.exists():
-        warnings.append(f"Missing planes registry dir: {PLANES_REGISTRY_DIR}")
-        return {"ok": False, "planes": planes, "warnings": warnings}
-    try:
-        files = sorted(PLANES_REGISTRY_DIR.rglob("registration_candidate.json"), key=_safe_stat_mtime, reverse=True)
-    except Exception as exc:
-        return {"ok": False, "planes": planes, "warnings": [f"Registry scan failed: {exc}"]}
-    for path in files:
-        data = _read_json(path)
-        if not isinstance(data, dict):
-            warnings.append(f"Malformed registration candidate: {path}")
-            continue
-        data.setdefault("source_path", str(path))
-        planes.append(data)
-    return {"ok": True, "planes": planes, "warnings": warnings}
 
 
 def _read_template_fallback() -> str:
@@ -1953,24 +1858,8 @@ def api_orchestrator() -> JSONResponse:
     return JSONResponse(_build_orchestrator_snapshot())
 
 
-@app.get("/api/planes/registry")
-def api_planes_registry() -> JSONResponse:
-    return JSONResponse(_build_planes_registry())
 
 
-@app.get("/api/project-board")
-def api_project_board() -> JSONResponse:
-    return JSONResponse(_build_project_board())
-
-
-@app.get("/api/workers/status")
-def api_workers_status() -> JSONResponse:
-    return JSONResponse(_build_workers_status())
-
-
-@app.get("/api/worker-events/summary")
-def api_worker_events_summary() -> JSONResponse:
-    return JSONResponse(_build_worker_events_summary())
 
 
 @app.get("/api/apps/dailybundle")
@@ -2004,21 +1893,6 @@ def api_models_edit_receipts() -> JSONResponse:
     return JSONResponse(list_edit_receipts())
 
 
-@app.post("/api/models/edit-apply")
-def api_models_edit_apply() -> JSONResponse:
-    from fastapi import Request
-    import asyncio
-    async def _read():
-        req = Request(scope={"type": "http"})
-        body = await req.json()
-        return body
-    # For now, return a stub — governed edit apply will be implemented in v0.3
-    return JSONResponse({
-        "ok": False,
-        "error": "Governed edit apply is not yet implemented. Use the dashboard for read-only visibility.",
-        "note": "Edit receipts are generated for tracking. Apply requires explicit operator approval.",
-    })
-
 @app.get("/api/models/routing-eligibility")
 def api_models_routing_eligibility() -> JSONResponse:
     return JSONResponse(build_routing_eligibility())
@@ -2037,8 +1911,6 @@ def api_models_wrappers() -> JSONResponse:
 @app.get("/api/models/settings-intelligence")
 def api_models_settings_intelligence() -> JSONResponse:
     return JSONResponse(build_settings_intelligence())
-
-
 
 
 

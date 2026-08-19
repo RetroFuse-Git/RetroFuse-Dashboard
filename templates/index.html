@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -389,9 +389,6 @@
     <nav class="module-tabs" aria-label="App modules">
       <button class="module-tab active" data-module-tab="ops" onclick="showModule('ops')">OPS</button>
       <button class="module-tab" data-module-tab="dailybundle" onclick="showModule('dailybundle')">Daily Bundle</button>
-      <button class="module-tab" data-module-tab="bolt" onclick="showModule('bolt')">Bolt</button>
-      <button class="module-tab" data-module-tab="safepoint" onclick="showModule('safepoint')">SAFEPOINT</button>
-      <button class="module-tab" data-module-tab="alpha" onclick="showModule('alpha')">Alpha</button>
       <button class="module-tab" data-module-tab="models" onclick="showModule('models')">Models</button>
     </nav>
 
@@ -464,16 +461,6 @@
         </div>
       </section>
 
-      <section class="card">
-        <div class="card-inner">
-          <div class="card-header">
-            <div class="card-title">Ops Notes & Meta</div>
-            <div class="card-tag">DAILYCHECK - NOTES</div>
-          </div>
-          <div class="card-body" id="notes-card"><div class="small">No notes recorded in this snapshot.</div></div>
-          <div class="footer-note"><span class="small">Notes are optional annotations from the DailyCheck run.</span></div>
-        </div>
-      </section>
 
       <section class="card" style="grid-column: 1 / -1;">
         <div class="card-inner">
@@ -486,21 +473,6 @@
           </div>
           <div class="footer-note">
             <span class="small">Source: OpsCOO_Daily_Orchestrator_Latest.json + lock file.</span>
-            <span class="small">Auto-refreshes every 10s.</span>
-          </div>
-        </div>
-      </section>
-      <section class="card" style="grid-column: 1 / -1;">
-        <div class="card-inner">
-          <div class="card-header">
-            <div class="card-title">SMC / WRC Live Observer</div>
-            <div class="card-tag">WRC WINDOW - SYMPHONY</div>
-          </div>
-          <div class="card-body" id="smc-wrc-live-status-card">
-            <div class="small">Loading WRC live status...</div>
-          </div>
-          <div class="footer-note">
-            <span class="small">Live WRC observation metrics and suppression stats.</span>
             <span class="small">Auto-refreshes every 10s.</span>
           </div>
         </div>
@@ -572,44 +544,6 @@
       </section>
     </main>
 
-    <main class="content-grid module-panel" data-module-panel="bolt">
-      <section class="card" style="grid-column: 1 / -1;">
-        <div class="card-inner">
-          <div class="card-header">
-            <div class="card-title">Bolt RC2 Controller</div>
-            <div class="card-tag">HEARTS - LINEAGE - CMDLOG</div>
-          </div>
-          <div class="card-body" id="bolt-card-module">
-            <div class="small">Bolt details are mirrored in the OPS module for this preview.</div>
-          </div>
-          <div class="footer-note"><span class="small">Dedicated Bolt controls remain in the OPS surface.</span></div>
-        </div>
-      </section>
-    </main>
-
-    <main class="content-grid module-panel" data-module-panel="safepoint">
-      <section class="card" style="grid-column: 1 / -1;">
-        <div class="card-inner">
-          <div class="card-header">
-            <div class="card-title">SAFEPOINT Module</div>
-            <div class="card-tag">RESERVED SURFACE</div>
-          </div>
-          <div class="card-body"><div class="small">SAFEPOINT summary remains in OPS; install-lane packaging is excluded from Daily Bundle v0.9.</div></div>
-        </div>
-      </section>
-    </main>
-
-    <main class="content-grid module-panel" data-module-panel="alpha">
-      <section class="card" style="grid-column: 1 / -1;">
-        <div class="card-inner">
-          <div class="card-header">
-            <div class="card-title">Alpha Module</div>
-            <div class="card-tag">RESERVED SURFACE</div>
-          </div>
-          <div class="card-body"><div class="small">Alpha capture remains in OPS; future app lanes should declare package scope before release.</div></div>
-        </div>
-      </section>
-    </main>
     <main class="content-grid module-panel" data-module-panel="models">
       <section class="card" style="grid-column: 1 / -1;">
         <div class="card-inner">
@@ -861,7 +795,6 @@
     renderDisks(snapshot);
     renderSafepoints(snapshot);
     renderAlpha(snapshot);
-    renderNotes(snapshot);
   }
 
   function statusClass(s) {
@@ -1118,18 +1051,10 @@
     `;
   }
 
-  function renderNotes(snapshot) {
-    const notesCard = document.getElementById("notes-card");
-    if (!notesCard) return;
-    const notes = Array.isArray(snapshot.notes) ? snapshot.notes : [];
-    if (!notes.length) { notesCard.innerHTML = '<div class="small">No notes captured for this snapshot.</div>'; return; }
-    const items = notes.map(n => `<div class="list-item small">- ${escapeHtml(n)}</div>`).join("");
-    notesCard.innerHTML = `<div class="list">${items}</div>`;
-  }
-
   loadSnapshot(false);
 
   // ---- Bolt RC2 ----
+
 
   function boltStatusClass(s) {
     const v = (s || "unknown").toLowerCase();
@@ -1525,65 +1450,6 @@
     }
   }
 
-  function renderSmcWrcLiveStatus(data) {
-    const card = document.getElementById("smc-wrc-live-status-card");
-    if (!card) return;
-
-    function getStatusClass(color) {
-      if (color === "GREEN") return "value-ok";
-      if (color === "YELLOW") return "value-warn";
-      if (color === "ORANGE") return "value-warn"; // Using warn for orange in existing classes
-      if (color === "RED") return "value-bad";
-      return "";
-    }
-
-    const age = data.checkpoint_age != null ? String(data.checkpoint_age) + "s" : "n/a";
-    const statusCls = getStatusClass(data.status_color);
-
-    card.innerHTML = `
-      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; margin-bottom:8px;">
-        <div><div class="label">Active Window</div><div class="value ${data.active_window ? "value-ok" : "value-warn"}">${data.active_window ? "YES" : "NO"}</div></div>
-        <div><div class="label">Observer Running</div><div class="value ${data.observer_running ? "value-ok" : "value-bad"}">${data.observer_running ? "YES" : "NO"}</div></div>
-        <div><div class="label">Status Code</div><div class="value ${statusCls}">${escapeHtml(data.status_color)}</div></div>
-      </div>
-      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:8px;">
-        <div><div class="label">Session ID</div><div class="value mono">${escapeHtml(data.session_id)}</div></div>
-        <div><div class="label">Window</div><div class="value">${escapeHtml(data.window_name)}</div></div>
-        <div><div class="label">Range</div><div class="value">${escapeHtml(data.window_range)}</div></div>
-      </div>
-      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; margin-bottom:8px;">
-        <div><div class="label">Latest Checkpoint</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(data.latest_checkpoint)}</div></div>
-        <div><div class="label">Checkpoint Age</div><div class="value mono">${escapeHtml(age)}</div></div>
-        <div><div class="label">Resolver State</div><div class="value mono" style="font-size:.7rem;">${escapeHtml(data.resolver_state)}</div></div>
-      </div>
-      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:8px; border-top:1px solid rgba(31, 41, 55, 0.8); padding-top:8px;">
-        <div><div class="label">FAST Suppressed</div><div class="value">${escapeHtml(String(data.fast_suppressed_count))}</div></div>
-        <div><div class="label">Ignore (Noise)</div><div class="value">${escapeHtml(String(data.ignore_non_media_count))}</div></div>
-        <div><div class="label">Player Configs</div><div class="value">${escapeHtml(String(data.player_config_count))}</div></div>
-        <div><div class="label">Unknown Linear</div><div class="value">${escapeHtml(String(data.unknown_plausible_linear_count))}</div></div>
-      </div>
-      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:8px;">
-        <div><div class="label">Seed Matches</div><div class="value value-ok">${escapeHtml(String(data.seed_match_fresh_candidate_count))}</div></div>
-        <div><div class="label">Direct Source Found</div><div class="value ${data.direct_source_found ? "value-ok" : ""}">${data.direct_source_found ? "TRUE" : "FALSE"}</div></div>
-        <div><div class="label">DRM Detected</div><div class="value ${data.drm_detected ? "value-bad" : ""}">${data.drm_detected ? "TRUE" : "FALSE"}</div></div>
-      </div>
-      <div class="card-row" style="border-top:1px solid rgba(31, 41, 55, 0.8); padding-top:8px;">
-        <div><div class="label">Next Safe Action</div><div class="value mono ${statusCls}">${escapeHtml(data.next_safe_action)}</div></div>
-      </div>
-    `;
-  }
-
-  async function loadSmcWrcLiveStatus() {
-    try {
-      const r = await fetch("/api/smc/wrc-live-status?nocache=" + Date.now());
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      const data = await r.json();
-      renderSmcWrcLiveStatus(data);
-    } catch (err) {
-      const card = document.getElementById("smc-wrc-live-status-card");
-      if (card) card.innerHTML = '<div class="small" style="color:#f97373;">Failed to load WRC status: ' + escapeHtml(err.message || "unknown") + "</div>";
-    }
-  }
 
   async function revalidateSafepoint(button) {
     const prevText = button ? button.textContent : "";
@@ -1790,13 +1656,11 @@
   loadOrchestrator();
   loadDailyBundle();
   loadBolt();
-  loadSmcWrcLiveStatus();
   loadGovernor();
   loadGovernorActivity();
   setInterval(loadOrchestrator, 10000);
   setInterval(loadDailyBundle, 10000);
   setInterval(loadBolt, 10000);
-  setInterval(loadSmcWrcLiveStatus, 10000);
   setInterval(loadGovernor, 10000);
   setInterval(loadGovernorActivity, 30000);
 
