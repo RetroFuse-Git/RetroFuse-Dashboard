@@ -1996,11 +1996,21 @@ def api_status() -> JSONResponse:
     read-only response. Sub-payloads are keyed by source endpoint name and
     preserve every field their individual renderers consume. Pure composition
     of existing builder functions - no new operational authority."""
+    orchestrator = _build_orchestrator_snapshot()
+    dailybundle = _build_dailybundle_app_snapshot()
+    bolt = _build_bolt_snapshot()
+    governor = _build_governor_snapshot()
+    # Phase 3 freshness parity: the individual endpoints attach source_freshness
+    # to their responses; the aggregate must do the same so the freshness badges
+    # keep rendering through the consolidated polling path.
+    orchestrator["source_freshness"] = _classify_daily_freshness(orchestrator.get("started"))
+    dailybundle["source_freshness"] = _classify_daily_freshness(dailybundle.get("started"))
+    bolt["source_freshness"] = _classify_daily_freshness(bolt.get("last_seen_utc"))
     return JSONResponse({
-        "orchestrator": _build_orchestrator_snapshot(),
-        "dailybundle": _build_dailybundle_app_snapshot(),
-        "bolt": _build_bolt_snapshot(),
-        "governor": _build_governor_snapshot(),
+        "orchestrator": orchestrator,
+        "dailybundle": dailybundle,
+        "bolt": bolt,
+        "governor": governor,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     })
 
