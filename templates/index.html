@@ -832,6 +832,7 @@
 
     snapshotCard.innerHTML = `
       <div class="card-row"><div><div class="label">Snapshot timestamp</div><div class="value">${escapeHtml(ts)}</div></div></div>
+      <div class="card-row">${freshnessBadgeHtml(snapshot.source_freshness)}</div>
       <div class="card-row"><div><div class="label">OPS root</div><div class="value mono">${escapeHtml(opsRoot)}</div></div></div>
       <div class="card-row">
         <div><div class="label">RC1 (Bolt RC1)</div><div class="value ${statusClass(rc1Status)}">${escapeHtml(rc1Status)}</div></div>
@@ -1209,6 +1210,7 @@
       `;
 
     card.innerHTML = `
+      <div class="card-row">${freshnessBadgeHtml(bolt.source_freshness)}</div>
       ${degradedSurface}
       ${renderBoltActionStatus()}
       <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid rgba(31, 41, 55, 0.8);">
@@ -1342,6 +1344,7 @@
         }).join("");
 
     card.innerHTML = `
+      <div class="card-row">${freshnessBadgeHtml(data.source_freshness)}</div>
       <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:8px;">
         <div><div class="label">Status</div><div class="value ${cls}">${escapeHtml(status)}</div></div>
         <div><div class="label">Strict Gate</div><div class="value">${escapeHtml(strict)}</div></div>
@@ -1388,6 +1391,7 @@
         }).join("");
 
     card.innerHTML = `
+      <div class="card-row">${freshnessBadgeHtml(data.source_freshness)}</div>
       <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:8px; margin-bottom:8px;">
         <div><div class="label">Build Status</div><div class="value ${statusCls}">${escapeHtml(status)}</div></div>
         <div><div class="label">Orchestrator</div><div class="value">${escapeHtml(data.orchestrator_status || "unknown")}</div></div>
@@ -1498,6 +1502,17 @@
   }
 
   // ---- Governor (RC3) visibility slice 1 ----
+  // Phase 3 freshness: shared badge renderer. Text + class (not color alone)
+  // so FRESH/STALE/MISSING/INVALID stay distinguishable without color vision.
+  function freshnessBadgeHtml(f) {
+    const state = (f && f.freshness) ? f.freshness : "MISSING";
+    const age = (f && f.age_sec != null) ? Math.round(f.age_sec / 60) + "m" : "n/a";
+    const src = (f && f.source_timestamp) ? String(f.source_timestamp).slice(0, 19) : "none";
+    const cls = freshnessClass(state);
+    return '<div class="label">Source Freshness</div>' +
+      '<div class="value ' + cls + '">' + escapeHtml(state) + ' <span class="small">(' + age + '; src ' + escapeHtml(src) + ')</span></div>';
+  }
+
   function freshnessClass(f) {
     const v = (f || "").toString().toUpperCase();
     if (v === "FRESH") return "value-ok";

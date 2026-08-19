@@ -1596,6 +1596,45 @@ GOVERNOR_LATEST_PATH = GOVERNOR_STATE_DIR / "governor_state_latest.json"
 # live heartbeat + presence/validity, never from transition age.
 GOVERNOR_HEARTBEAT_STALE_SECONDS = 15 * 60
 
+# Daily-artifact freshness contract: matches bundle_selector.py
+# FRESHNESS_THRESHOLD_HOURS=24 (documented in DAILY_BUNDLE_SESSION_BOOT.md).
+# Applied to dashboard surfaces whose source is the once-daily OPS run
+# (snapshot, orchestrator, daily bundle, bolt controller last-seen).
+DASHBOARD_DAILY_FRESHNESS_STALE_SECONDS = 24 * 60 * 60
+
+
+def _classify_daily_freshness(source_ts_iso: Optional[str]) -> Dict[str, Any]:
+    """Classify a daily-artifact source timestamp as FRESH/STALE/MISSING/INVALID.
+
+    Uses the canonical 24h contract (bundle_selector FRESHNESS_THRESHOLD_HOURS).
+    Returns freshness metadata: state, age_sec, source_timestamp.
+    """
+    now_utc = datetime.now(timezone.utc)
+    if not source_ts_iso:
+        return {
+            "freshness": "MISSING",
+            "age_sec": None,
+            "source_timestamp": None,
+            "stale_after_sec": DASHBOARD_DAILY_FRESHNESS_STALE_SECONDS,
+        }
+    ts = _parse_utc_iso(source_ts_iso)
+    if ts is None:
+        return {
+            "freshness": "INVALID",
+            "age_sec": None,
+            "source_timestamp": source_ts_iso,
+            "stale_after_sec": DASHBOARD_DAILY_FRESHNESS_STALE_SECONDS,
+        }
+    age_sec = round(max(0.0, now_utc.timestamp() - ts), 1)
+    state = "STALE" if age_sec > DASHBOARD_DAILY_FRESHNESS_STALE_SECONDS else "FRESH"
+    return {
+        "freshness": state,
+        "age_sec": age_sec,
+        "source_timestamp": source_ts_iso,
+        "stale_after_sec": DASHBOARD_DAILY_FRESHNESS_STALE_SECONDS,
+    }
+
+
 
 def _read_json_file(path: Path) -> tuple:
     """Read a JSON file; return (dict|None, error_str|None). Boundedly
@@ -1849,13 +1888,20 @@ def health() -> JSONResponse:
 @app.get("/api/latest")
 def api_latest() -> JSONResponse:
     snap = _build_latest_snapshot()
+    # Phase 3 freshness: daily-artifact contract (24h per bundle_selector
+    # FRESHNESS_THRESHOLD_HOURS). Snapshot source timestamp is authoritative.
+    snap["source_freshness"] = _classify_daily_freshness(snap.get("timestamp"))
     return JSONResponse(snap)
 
 
 
 @app.get("/api/orchestrator")
 def api_orchestrator() -> JSONResponse:
-    return JSONResponse(_build_orchestrator_snapshot())
+    snap = _build_orchestrator_snapshot()
+    # Phase 3 freshness: orchestrator is a once-daily run; started marks the
+    # last daily execution.
+    snap["source_freshness"] = _classify_daily_freshness(snap.get("started"))
+    return JSONResponse(snap)
 
 
 
@@ -1864,12 +1910,21 @@ def api_orchestrator() -> JSONResponse:
 
 @app.get("/api/apps/dailybundle")
 def api_apps_dailybundle() -> JSONResponse:
-    return JSONResponse(_build_dailybundle_app_snapshot())
+    snap = _build_dailybundle_app_snapshot()
+    # Phase 3 freshness: daily bundle build is a once-daily artifact; started
+    # marks the last build execution.
+    snap["source_freshness"] = _classify_daily_freshness(snap.get("started"))
+    return JSONResponse(snap)
 
 
 @app.get("/api/bolt")
 def api_bolt() -> JSONResponse:
-    return JSONResponse(_build_bolt_snapshot())
+    snap = _build_bolt_snapshot()
+    # Phase 3 freshness: bolt controller last-seen is a daily-liveness source
+    # classified with the canonical 24h daily contract (distinct from the
+    # 60s/300s controller_status liveness semantics, which stay untouched).
+    snap["source_freshness"] = _classify_daily_freshness(snap.get("last_seen_utc"))
+    return JSONResponse(snap)
 
 
 @app.get("/api/smc/wrc-live-status")
